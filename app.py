@@ -1,6 +1,5 @@
 import streamlit as st
-import gspread
-from google.oauth2.service_account import Credentials
+from supabase import create_client
 from openai import OpenAI
 import pandas as pd
 
@@ -152,39 +151,25 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# ── Google Sheets connection ──────────────────────────────────────────────────
+# ── Supabase connection ───────────────────────────────────────────────────────
 
 @st.cache_resource
-def get_sheet():
-    scope = [
-        "https://spreadsheets.google.com/feeds",
-        "https://www.googleapis.com/auth/drive",
-    ]
-    creds = Credentials.from_service_account_info(
-        st.secrets["gcp_service_account"], scopes=scope
-    )
-    client = gspread.authorize(creds)
-    return client.open(st.secrets["SHEET_NAME"]).sheet1
-
-
-def ensure_headers(sheet):
-    first_row = sheet.row_values(1)
-    if not first_row:
-        sheet.append_row(["Name", "Email", "Phone", "LinkedIn", "Notes"])
+def get_client():
+    return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
 
 
 def load_contacts() -> pd.DataFrame:
-    sheet = get_sheet()
-    records = sheet.get_all_records()
-    if not records:
-        return pd.DataFrame(columns=["Name", "Email", "Phone", "LinkedIn", "Notes"])
-    return pd.DataFrame(records)
+    response = get_client().table("contacts").select("name, email, phone, linkedin, notes").order("id").execute()
+    if not response.data:
+        return pd.DataFrame(columns=["name", "email", "phone", "linkedin", "notes"])
+    return pd.DataFrame(response.data).rename(columns=str.title)
 
 
 def save_contact(name, email, phone, linkedin, notes):
-    sheet = get_sheet()
-    ensure_headers(sheet)
-    sheet.append_row([name, email, phone, linkedin, notes])
+    get_client().table("contacts").insert({
+        "name": name, "email": email, "phone": phone,
+        "linkedin": linkedin, "notes": notes,
+    }).execute()
 
 
 # ── AI query ──────────────────────────────────────────────────────────────────
@@ -257,7 +242,7 @@ with tab_add:
                 save_contact(name.strip(), email.strip(), phone.strip(),
                              linkedin.strip(), notes.strip())
                 st.success(f"✅ **{name}** has been saved to your contacts!")
-                get_sheet.clear()
+                pass  # Supabase reads live, no cache to clear
             except Exception as e:
                 st.error(f"Could not save: {e}")
 
