@@ -161,8 +161,11 @@ def get_client():
 def load_contacts() -> pd.DataFrame:
     response = get_client().table("contacts").select("name, email, phone, linkedin, notes").order("id").execute()
     if not response.data:
-        return pd.DataFrame(columns=["name", "email", "phone", "linkedin", "notes"])
-    return pd.DataFrame(response.data).rename(columns=str.title)
+        return pd.DataFrame(columns=["Name", "Email", "Phone", "LinkedIn", "Notes"])
+    return pd.DataFrame(response.data).rename(columns={
+        "name": "Name", "email": "Email", "phone": "Phone",
+        "linkedin": "LinkedIn", "notes": "Notes",
+    })
 
 
 def save_contact(name, email, phone, linkedin, notes):
