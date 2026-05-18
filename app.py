@@ -309,7 +309,7 @@ with tab_view:
                     axis=1,
                 )
                 df = df[mask]
-                st.caption(f"{len(df)} result(s) for "{search}"")
+                st.caption(f'{len(df)} result(s) for "{search}"')
 
             st.dataframe(df, use_container_width=True, hide_index=True)
     except Exception as e:
