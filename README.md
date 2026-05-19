@@ -70,6 +70,11 @@ No spreadsheets. No apps to install. Just a URL you open on your phone.
 3. Can view all contacts with live search filtering
 4. Types a natural language question → OpenAI reads all contacts and returns a smart answer
 
+<img width="1292" height="1768" alt="image" src="https://github.com/user-attachments/assets/e611d5ae-089d-44fa-bb00-fc34aba93f54" />
+
+<img width="1488" height="1746" alt="image" src="https://github.com/user-attachments/assets/56947695-dd42-44b2-865f-dd4b58d4a8d3" />
+
+
 ---
 
 ## 🛠️ Tech Stack
@@ -94,6 +99,8 @@ networking-app/
 ├── .gitignore          # Keeps secrets out of GitHub
 └── README.md           # This file
 ```
+<img width="3024" height="1964" alt="image" src="https://github.com/user-attachments/assets/5a7544b2-402e-495f-9564-6c1e54dca851" />
+
 
 That's it — the whole app is a single Python file.
 
