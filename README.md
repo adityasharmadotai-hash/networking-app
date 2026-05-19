@@ -1,74 +1,211 @@
-# Networking Contacts App
+# 🤝 Networking Contacts App
 
-A simple Streamlit app to save and search networking contacts, backed by Google Sheets and Claude AI.
-
----
-
-## One-time setup (takes ~15 minutes)
-
-### Step 1 — Get your OpenAI API key
-
-1. Go to [platform.openai.com](https://platform.openai.com) and sign up / log in.
-2. Click **API Keys → Create new secret key**. Copy the key (starts with `sk-`).
+> **Never lose a contact again.** A smart, AI-powered contact book built for people who meet dozens of people at events and never want to lose track of them.
 
 ---
 
-### Step 2 — Create a Google Sheet
+## 🌟 Support & Connect
 
-1. Go to [sheets.google.com](https://sheets.google.com) and create a new blank sheet.
-2. Name it exactly: **Networking Contacts** (or any name you like — you'll use it in Step 4).
-3. Leave it empty — the app will add the header row automatically.
+If this project helped you, please consider:
 
----
-
-### Step 3 — Create a Google Cloud service account
-
-This lets the app write to your sheet without a login popup.
-
-1. Go to [console.cloud.google.com](https://console.cloud.google.com).
-2. Create a new project (or use an existing one).
-3. In the search bar type **"Google Sheets API"** → Enable it.
-4. In the search bar type **"Google Drive API"** → Enable it.
-5. Go to **IAM & Admin → Service Accounts → Create Service Account**.
-   - Name: `networking-app` (anything works)
-   - Click **Done** (skip optional steps).
-6. Click the service account you just created → **Keys tab → Add Key → Create new key → JSON**.
-7. A `.json` file downloads. Open it — you'll copy values from it in Step 4.
+| | |
+|---|---|
+| ⭐ **Star the repo** | [github.com/adityasharmadotai-hash](https://github.com/adityasharmadotai-hash) |
+| 💼 **Follow on LinkedIn** | [linkedin.com/in/aditya-hicounselor](https://www.linkedin.com/in/aditya-hicounselor/) |
+| 📺 **Subscribe on YouTube** | [YouTube Channel](https://www.youtube.com/channel/UCPjQtVNUrf7EKrm8ZoqrCAQ) |
+| 🚀 **AI Jobs in the USA** | [Join the Waitlist](https://docs.google.com/forms/d/e/1FAIpQLSc3gJssBV3B25EZ3sYA7Qcen9NbtOB_wgQaturfB7lTXuAdLQ/viewform) |
 
 ---
 
-### Step 4 — Share your Google Sheet with the service account
+## 📖 Overview
 
-1. Open the `.json` file you downloaded. Find the `"client_email"` value — it looks like  
-   `networking-app@your-project.iam.gserviceaccount.com`
-2. Open your Google Sheet → **Share** → paste that email → set role to **Editor** → Send.
+Every networking event ends the same way — you meet 10 interesting people, collect business cards or swap numbers, and then three weeks later you can't remember who was who or where you met them.
+
+This app solves that. Open it on your phone right after meeting someone, fill in their details and a quick note about the context, and it's saved forever. Later, ask the AI *"who did I meet at the AI Summit?"* or *"find everyone who works in product"* — and it pulls them up instantly.
+
+No spreadsheets. No apps to install. Just a URL you open on your phone.
 
 ---
 
-### Step 5 — Install and run locally
+## ✨ Features
+
+- **📇 Quick Contact Entry** — Name, email, phone, LinkedIn URL, and a free-form notes field
+- **☁️ Cloud Database** — Every contact is saved to Supabase (PostgreSQL) in real time
+- **🔍 Instant Search** — Filter across all fields with a single search box
+- **🤖 AI-Powered Queries** — Ask questions in plain English: *"Who works in fintech?"*, *"Show me people I met in New York"*
+- **📊 Contact Stats** — See total contacts, how many have emails, how many are on LinkedIn
+- **📱 Mobile-First** — Works great on a phone browser, no app install needed
+- **🎨 Beautiful UI** — Gradient hero, card layout, clean typography
+
+---
+
+## 🔄 How It Works
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                   USER ON PHONE/BROWSER                 │
+└────────────────────────┬────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────┐
+│                   STREAMLIT APP (app.py)                │
+│                                                         │
+│   ┌─────────────┐  ┌──────────────┐  ┌─────────────┐   │
+│   │  ➕ Add      │  │  📋 View All  │  │  🤖 Ask AI  │   │
+│   │  Contact    │  │  Contacts    │  │             │   │
+│   └──────┬──────┘  └──────┬───────┘  └──────┬──────┘   │
+└──────────┼────────────────┼─────────────────┼──────────┘
+           │                │                 │
+           ▼                ▼                 ▼
+┌──────────────────┐  ┌──────────────┐  ┌────────────────┐
+│  SUPABASE DB     │  │  SUPABASE DB │  │  OPENAI GPT-4o │
+│  INSERT row      │  │  SELECT all  │  │  Read contacts │
+│                  │  │  rows        │  │  Answer query  │
+└──────────────────┘  └──────────────┘  └────────────────┘
+```
+
+**Flow:**
+1. User opens the app on their phone
+2. Fills in contact details → saved instantly to Supabase
+3. Can view all contacts with live search filtering
+4. Types a natural language question → OpenAI reads all contacts and returns a smart answer
+
+---
+
+## 🛠️ Tech Stack
+
+| Layer | Technology | Purpose |
+|-------|-----------|---------|
+| **Frontend** | [Streamlit](https://streamlit.io) | Python-based web UI, runs in the browser |
+| **Database** | [Supabase](https://supabase.com) | Free PostgreSQL cloud database |
+| **AI** | [OpenAI GPT-4o](https://openai.com) | Natural language search over contacts |
+| **Language** | Python 3.9+ | Everything runs in Python |
+| **Hosting** | [Streamlit Community Cloud](https://share.streamlit.io) | Free deployment, public URL |
+
+---
+
+## 📁 File Structure
+
+```
+networking-app/
+│
+├── app.py              # The entire application (UI + database + AI logic)
+├── requirements.txt    # Python dependencies
+├── .gitignore          # Keeps secrets out of GitHub
+└── README.md           # This file
+```
+
+That's it — the whole app is a single Python file.
+
+---
+
+## 🚀 Getting Started
+
+### Prerequisites
+
+- Python 3.9 or higher
+- A free [Supabase](https://supabase.com) account
+- An [OpenAI](https://platform.openai.com) API key
+
+### 1. Clone the repo
+
+```bash
+git clone https://github.com/adityasharmadotai-hash/networking-app.git
+cd networking-app
+```
+
+### 2. Install dependencies
 
 ```bash
 pip install -r requirements.txt
+```
+
+### 3. Set up Supabase
+
+Go to your Supabase project → **SQL Editor** → run this:
+
+```sql
+create table contacts (
+  id bigint generated always as identity primary key,
+  name text,
+  email text,
+  phone text,
+  linkedin text,
+  notes text,
+  created_at timestamp with time zone default now()
+);
+
+alter table contacts disable row level security;
+```
+
+### 4. Add your secrets
+
+On Streamlit Cloud, go to your app → **⋮ → Settings → Secrets** and paste:
+
+```toml
+OPENAI_API_KEY = "sk-..."
+SUPABASE_URL   = "https://xxxx.supabase.co"
+SUPABASE_KEY   = "your-publishable-key"
+```
+
+### 5. Run locally
+
+```bash
 streamlit run app.py
 ```
 
-The app opens at `http://localhost:8501`. Test it — add a contact and make sure it appears in your Google Sheet.
+Open [http://localhost:8501](http://localhost:8501) in your browser.
 
 ---
 
-## Deploy to Streamlit Community Cloud (free, public URL)
+## ☁️ Deploy to Streamlit Cloud
 
-1. Push this repo to GitHub (the `.gitignore` already excludes `secrets.toml`).
-2. Go to [share.streamlit.io](https://share.streamlit.io) → **New app** → pick your repo → `app.py`.
-3. Click **Advanced settings → Secrets** and paste the entire contents of your `secrets.toml` there.
-4. Click **Deploy**. You get a public URL like `https://yourname-networking-app.streamlit.app` — open it on your phone!
+1. Push this repo to GitHub
+2. Go to [share.streamlit.io](https://share.streamlit.io) → **New app**
+3. Select your repo and set the main file to `app.py`
+4. Click **Advanced settings → Secrets** and paste your three keys
+5. Click **Deploy** — you get a public URL you can open on any phone
 
 ---
 
-## How to use
+## 📚 Full Tutorial
 
-| Tab | What it does |
-|-----|-------------|
-| ➕ Add Contact | Fill in name, email, phone, LinkedIn, notes → Save |
-| 📋 All Contacts | See everyone; filter by typing in the search box |
-| 🤖 Ask AI | Type a question in plain English — "Who did I meet at an AI conference?" |
+Want a detailed, beginner-friendly walkthrough of how this entire app was built from scratch — every line of code explained in plain English?
+
+👉 **[Read the full tutorial → TUTORIAL.md](TUTORIAL.md)**
+
+Also check out the tutorial for the companion project:
+👉 **[Docs Reader RAG Agent Tutorial](https://github.com/adityasharmadotai-hash/docs-reader-rag-agent/blob/main/TUTORIAL.md)**
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome! If you have ideas for improvements:
+
+1. Fork the repo
+2. Create a new branch: `git checkout -b feature/your-feature`
+3. Make your changes and commit: `git commit -m "Add your feature"`
+4. Push to your branch: `git push origin feature/your-feature`
+5. Open a Pull Request
+
+---
+
+## 📄 License
+
+This project is licensed under the **MIT License** — feel free to use it, modify it, and build on top of it.
+
+---
+
+## 👨‍💻 Built By
+
+Made with ❤️ by **Aditya Sharma**
+
+| | |
+|---|---|
+| 💼 **LinkedIn** | [linkedin.com/in/aditya-hicounselor](https://www.linkedin.com/in/aditya-hicounselor/) |
+| 📺 **YouTube** | [YouTube Channel](https://www.youtube.com/channel/UCPjQtVNUrf7EKrm8ZoqrCAQ) |
+| 🐙 **GitHub** | [github.com/adityasharmadotai-hash](https://github.com/adityasharmadotai-hash) |
+| 🚀 **AI Jobs** | [AI Jobs in the USA](https://docs.google.com/forms/d/e/1FAIpQLSc3gJssBV3B25EZ3sYA7Qcen9NbtOB_wgQaturfB7lTXuAdLQ/viewform) |
+
+If this helped you, a ⭐ on the repo goes a long way!
