@@ -56,6 +56,9 @@ Later, you can ask the AI:
 - *"Show me everyone who works in product management"*
 - *"Find people I should follow up with from New York"*
 
+<img width="1292" height="1768" alt="image" src="https://github.com/user-attachments/assets/1dd616c6-4d7a-4cca-8d10-7ca569aa7af5" />
+
+
 ### Why This Stack?
 
 | Tool | Why We Use It |
@@ -100,6 +103,8 @@ This entire app is **one Python file** and about **150 lines of code**. That's i
 3. Supabase stores it in a table called `contacts`
 4. When you click **All Contacts**, the app fetches all rows from Supabase and shows them
 5. When you **Ask AI**, the app fetches all contacts, passes them to OpenAI along with your question, and GPT-4o returns a smart answer
+
+<img width="1488" height="1746" alt="image" src="https://github.com/user-attachments/assets/ff2ab555-2867-4cab-9946-35dcb02f13aa" />
 
 ---
 
@@ -184,6 +189,9 @@ pip install -r requirements.txt
 3. Give it a name (e.g. `networking-app`) and set a database password
 4. Choose any region close to you
 5. Wait about 60 seconds for it to provision
+
+<img width="3024" height="1964" alt="image" src="https://github.com/user-attachments/assets/e79dc739-8d1d-4960-a4c8-df1de499fdca" />
+
 
 ### Create the contacts table
 
@@ -366,6 +374,7 @@ def ask_ai(question: str, df: pd.DataFrame) -> str:
     )
     return response.choices[0].message.content
 ```
+
 
 **Plain English — this is the AI magic:**
 
