@@ -13,6 +13,7 @@ import os
 import pickle
 import re
 import base64
+import tempfile
 from datetime import datetime, timezone
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
@@ -26,6 +27,36 @@ SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GMAIL_TOKEN_FILE = os.path.join(_BASE_DIR, os.getenv("GMAIL_TOKEN_FILE", "gmail_token.json"))
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "susan@hiregen.co")
+
+
+def _get_token_path() -> str:
+    """Load Gmail token from env var (Railway), Streamlit secrets, or local file."""
+    # 1. Plain env var — Railway
+    token_b64 = os.getenv("GMAIL_TOKEN_B64", "")
+    if token_b64:
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pkl")
+        tmp.write(base64.b64decode(token_b64))
+        tmp.flush()
+        tmp.close()
+        return tmp.name
+
+    # 2. Streamlit secrets
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+        if get_script_run_ctx() is not None:
+            import streamlit as st
+            token_b64 = st.secrets.get("GMAIL_TOKEN_B64", "")
+            if token_b64:
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pkl")
+                tmp.write(base64.b64decode(token_b64))
+                tmp.flush()
+                tmp.close()
+                return tmp.name
+    except Exception:
+        pass
+
+    # 3. Local file
+    return GMAIL_TOKEN_FILE
 
 POSITIVE_KEYWORDS = [
     "interested", "love to", "would love", "let's connect", "lets connect",
@@ -50,7 +81,8 @@ BOUNCE_KEYWORDS = [
 
 
 def get_gmail_service():
-    with open(GMAIL_TOKEN_FILE, "rb") as f:
+    token_path = _get_token_path()
+    with open(token_path, "rb") as f:
         creds = pickle.load(f)
     if creds.expired and creds.refresh_token:
         creds.refresh(Request())
