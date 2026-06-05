@@ -1,5 +1,6 @@
 [build]
 builder = "nixpacks"
+buildCommand = "pip install -r outreach-agent/requirements.txt"
 
 [deploy]
 startCommand = "python3 outreach-agent/scheduler.py"
