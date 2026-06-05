@@ -44,25 +44,107 @@ TITLE_PRIORITY = [
 ]
 
 
-def find_linkedin_url(company_name: str, title: str) -> str | None:
-    """Use SerpAPI to find a LinkedIn profile URL for a given title at a company."""
-    query = f'site:linkedin.com/in "{title}" "{company_name}"'
-    params = {
-        "engine": "google",
-        "q": query,
-        "num": 3,
-        "api_key": _serpapi_key(),
-    }
+_serpapi_linkedin_exhausted = False
+
+
+def _find_linkedin_via_serpapi(query: str) -> str | None:
+    """Find LinkedIn URL via SerpAPI Google search."""
+    global _serpapi_linkedin_exhausted
+    if _serpapi_linkedin_exhausted or not _serpapi_key():
+        return None
     try:
+        params = {"engine": "google", "q": query, "num": 3, "api_key": _serpapi_key()}
         r = requests.get(SERPAPI_URL, params=params, timeout=15)
-        r.raise_for_status()
-        results = r.json().get("organic_results", [])
-        for result in results:
+        if r.status_code == 429:
+            _serpapi_linkedin_exhausted = True
+            return None
+        data = r.json()
+        if "error" in data and "run out" in data["error"].lower():
+            _serpapi_linkedin_exhausted = True
+            return None
+        for result in data.get("organic_results", []):
             link = result.get("link", "")
             if "linkedin.com/in/" in link:
                 return link
     except Exception as e:
-        print(f"[Contact Finder] SerpAPI error for '{title}' at '{company_name}': {e}")
+        print(f"[Contact Finder] SerpAPI error: {e}")
+    return None
+
+
+def find_linkedin_url(company_name: str, title: str) -> str | None:
+    """Find a LinkedIn profile URL using SerpAPI (only reliable option)."""
+    query = f'site:linkedin.com/in "{title}" "{company_name}"'
+    return _find_linkedin_via_serpapi(query)
+
+
+# ── Hunter.io fallback (finds email directly by company domain) ───────────────
+
+def _guess_domain(company_name: str) -> str:
+    """Best-effort company domain guess."""
+    import re
+    slug = re.sub(r"[^a-z0-9]", "", company_name.lower().strip())
+    return f"{slug}.com"
+
+
+def _hunter_domain_search(company_name: str) -> dict | None:
+    """
+    Use Hunter.io to find a recruiter/HR email at a company directly.
+    Requires HUNTER_API_KEY in env/secrets (free tier: 25 searches/month).
+    Sign up free at https://hunter.io
+    """
+    hunter_key = _get_secret("HUNTER_API_KEY")
+    if not hunter_key:
+        return None
+
+    domain = _guess_domain(company_name)
+    RECRUITER_DEPTS = ["executive", "hr", "management"]
+
+    try:
+        r = requests.get(
+            "https://api.hunter.io/v2/domain-search",
+            params={
+                "domain":       domain,
+                "api_key":      hunter_key,
+                "limit":        10,
+                "seniority":    "senior,executive",
+            },
+            timeout=12,
+        )
+        if not r.ok:
+            return None
+
+        data    = r.json().get("data", {})
+        emails  = data.get("emails", [])
+
+        # Priority: HR/recruiting titles first
+        PRIORITY_KEYWORDS = [
+            "talent", "recruit", "hr", "human resource",
+            "cto", "ceo", "vp engineering", "founder",
+        ]
+
+        def score(e):
+            title_lower = (e.get("position") or "").lower()
+            for i, kw in enumerate(PRIORITY_KEYWORDS):
+                if kw in title_lower:
+                    return i
+            return 99
+
+        emails = [e for e in emails if e.get("value") and e.get("type") == "professional"]
+        if not emails:
+            return None
+
+        best = sorted(emails, key=score)[0]
+        first = best.get("first_name", "")
+        last  = best.get("last_name", "")
+        return {
+            "contact_name":         f"{first} {last}".strip(),
+            "contact_title":        best.get("position", ""),
+            "contact_email":        best.get("value", ""),
+            "contact_linkedin_url": best.get("linkedin", ""),
+        }
+
+    except Exception as e:
+        print(f"[Contact Finder] Hunter.io error for '{company_name}': {e}")
     return None
 
 
@@ -142,26 +224,36 @@ def poll_wiza_reveal(reveal_id: str, max_wait: int = 60) -> dict | None:
 
 
 def prospect_contact(company_name: str) -> dict | None:
-    """Find the best contact at a company using SerpAPI + Wiza."""
-    for title in TITLE_PRIORITY:
-        print(f"[Contact Finder] Searching LinkedIn: '{title}' at '{company_name}'")
-        linkedin_url = find_linkedin_url(company_name, title)
+    """Find the best contact at a company using SerpAPI + Wiza, with Hunter.io fallback."""
 
-        if not linkedin_url:
-            continue
+    # Primary flow: SerpAPI → LinkedIn URL → Wiza email lookup
+    if not _serpapi_linkedin_exhausted:
+        for title in TITLE_PRIORITY:
+            print(f"[Contact Finder] Searching LinkedIn: '{title}' at '{company_name}'")
+            linkedin_url = find_linkedin_url(company_name, title)
 
-        print(f"[Contact Finder] Found LinkedIn: {linkedin_url}")
-        reveal_id = start_wiza_reveal(linkedin_url)
+            if not linkedin_url:
+                continue
 
-        if not reveal_id:
-            continue
+            print(f"[Contact Finder] Found LinkedIn: {linkedin_url}")
+            reveal_id = start_wiza_reveal(linkedin_url)
 
-        print(f"[Contact Finder] Wiza reveal started (id: {reveal_id}), waiting for email...")
-        contact = poll_wiza_reveal(reveal_id, max_wait=420)
+            if not reveal_id:
+                continue
 
-        if contact:
-            print(f"[Contact Finder] Got email for {contact['contact_name']} at {company_name}")
-            return contact
+            print(f"[Contact Finder] Wiza reveal started (id: {reveal_id}), waiting for email...")
+            contact = poll_wiza_reveal(reveal_id, max_wait=420)
+
+            if contact:
+                print(f"[Contact Finder] ✅ Got email via Wiza for {contact['contact_name']} at {company_name}")
+                return contact
+
+    # Fallback: Hunter.io domain search (no LinkedIn URL needed)
+    print(f"[Contact Finder] Trying Hunter.io for '{company_name}'...")
+    contact = _hunter_domain_search(company_name)
+    if contact:
+        print(f"[Contact Finder] ✅ Got email via Hunter.io for {contact['contact_name']} at {company_name}")
+        return contact
 
     print(f"[Contact Finder] No contact found for: {company_name}")
     return None
