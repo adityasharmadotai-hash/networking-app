@@ -1,0 +1,52 @@
+name: Daily Outreach Agent
+
+on:
+  schedule:
+    - cron: "0 13 * * 1-5"   # 8:00 AM EST (13:00 UTC), Monday–Friday
+  workflow_dispatch:           # Allow manual trigger from GitHub UI
+
+jobs:
+  run-agent:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r outreach-agent/requirements.txt
+
+      - name: Write .env file
+        working-directory: outreach-agent
+        run: |
+          cat <<EOF > .env
+          SERPAPI_KEY=${{ secrets.SERPAPI_KEY }}
+          WIZA_API_KEY=${{ secrets.WIZA_API_KEY }}
+          SUPABASE_URL=${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GOOGLE_SHEET_ID=${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON=service_account.json
+          SENDER_EMAIL=susan@hiregen.co
+          GMAIL_TOKEN_FILE=gmail_token.json
+          GMAIL_CREDENTIALS_FILE=gmail_credentials.json
+          DAILY_EMAIL_LIMIT=20
+          FOLLOWUP_INTERVAL_DAYS=3
+          MAX_FOLLOWUPS=5
+          EOF
+
+      - name: Write Google service account key
+        working-directory: outreach-agent
+        run: echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' > service_account.json
+
+      - name: Write Gmail token
+        working-directory: outreach-agent
+        run: echo '${{ secrets.GMAIL_TOKEN_PICKLE_B64 }}' | base64 -d > gmail_token.json
+
+      - name: Run outreach agent
+        working-directory: outreach-agent
+        run: python main.py
