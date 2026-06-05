@@ -71,10 +71,42 @@ def _find_linkedin_via_serpapi(query: str) -> str | None:
     return None
 
 
+def _find_linkedin_via_google_cse(query: str) -> str | None:
+    """Fallback: Google Custom Search API (free: 100 queries/day)."""
+    api_key = _get_secret("GOOGLE_CSE_API_KEY")
+    cx      = _get_secret("GOOGLE_CSE_ID")
+    if not api_key or not cx:
+        return None
+    try:
+        r = requests.get(
+            "https://www.googleapis.com/customsearch/v1",
+            params={"key": api_key, "cx": cx, "q": query, "num": 3},
+            timeout=12,
+        )
+        if not r.ok:
+            print(f"[Contact Finder] Google CSE error: {r.status_code} {r.text[:100]}")
+            return None
+        for item in r.json().get("items", []):
+            link = item.get("link", "")
+            if "linkedin.com/in/" in link:
+                return link.split("?")[0]
+    except Exception as e:
+        print(f"[Contact Finder] Google CSE error: {e}")
+    return None
+
+
 def find_linkedin_url(company_name: str, title: str) -> str | None:
-    """Find a LinkedIn profile URL using SerpAPI (only reliable option)."""
+    """Find a LinkedIn profile URL — SerpAPI first, Google CSE as fallback."""
     query = f'site:linkedin.com/in "{title}" "{company_name}"'
-    return _find_linkedin_via_serpapi(query)
+
+    # 1. SerpAPI
+    url = _find_linkedin_via_serpapi(query)
+    if url:
+        return url
+
+    # 2. Google Custom Search API (free 100/day fallback)
+    print(f"[Contact Finder] SerpAPI unavailable — trying Google CSE for '{title}' at '{company_name}'")
+    return _find_linkedin_via_google_cse(query)
 
 
 # ── Hunter.io fallback (finds email directly by company domain) ───────────────
@@ -224,36 +256,26 @@ def poll_wiza_reveal(reveal_id: str, max_wait: int = 60) -> dict | None:
 
 
 def prospect_contact(company_name: str) -> dict | None:
-    """Find the best contact at a company using SerpAPI + Wiza, with Hunter.io fallback."""
+    """Find the best contact at a company: LinkedIn URL (SerpAPI/Google CSE) → Wiza email."""
+    for title in TITLE_PRIORITY:
+        print(f"[Contact Finder] Searching LinkedIn: '{title}' at '{company_name}'")
+        linkedin_url = find_linkedin_url(company_name, title)
 
-    # Primary flow: SerpAPI → LinkedIn URL → Wiza email lookup
-    if not _serpapi_linkedin_exhausted:
-        for title in TITLE_PRIORITY:
-            print(f"[Contact Finder] Searching LinkedIn: '{title}' at '{company_name}'")
-            linkedin_url = find_linkedin_url(company_name, title)
+        if not linkedin_url:
+            continue
 
-            if not linkedin_url:
-                continue
+        print(f"[Contact Finder] Found LinkedIn: {linkedin_url}")
+        reveal_id = start_wiza_reveal(linkedin_url)
 
-            print(f"[Contact Finder] Found LinkedIn: {linkedin_url}")
-            reveal_id = start_wiza_reveal(linkedin_url)
+        if not reveal_id:
+            continue
 
-            if not reveal_id:
-                continue
+        print(f"[Contact Finder] Wiza reveal started (id: {reveal_id}), waiting for email...")
+        contact = poll_wiza_reveal(reveal_id, max_wait=420)
 
-            print(f"[Contact Finder] Wiza reveal started (id: {reveal_id}), waiting for email...")
-            contact = poll_wiza_reveal(reveal_id, max_wait=420)
-
-            if contact:
-                print(f"[Contact Finder] ✅ Got email via Wiza for {contact['contact_name']} at {company_name}")
-                return contact
-
-    # Fallback: Hunter.io domain search (no LinkedIn URL needed)
-    print(f"[Contact Finder] Trying Hunter.io for '{company_name}'...")
-    contact = _hunter_domain_search(company_name)
-    if contact:
-        print(f"[Contact Finder] ✅ Got email via Hunter.io for {contact['contact_name']} at {company_name}")
-        return contact
+        if contact:
+            print(f"[Contact Finder] ✅ Got email for {contact['contact_name']} at {company_name}")
+            return contact
 
     print(f"[Contact Finder] No contact found for: {company_name}")
     return None
