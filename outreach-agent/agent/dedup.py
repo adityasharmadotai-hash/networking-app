@@ -18,7 +18,17 @@ GMAIL_TOKEN_FILE = os.path.join(_BASE_DIR, os.getenv("GMAIL_TOKEN_FILE", "gmail_
 
 
 def _get_token_path() -> str:
-    """Load Gmail token from Streamlit secrets on cloud, or local file."""
+    """Load Gmail token from env var (Railway), Streamlit secrets (cloud), or local file."""
+    # 1. Plain env var — Railway / any server
+    token_b64 = os.getenv("GMAIL_TOKEN_B64", "")
+    if token_b64:
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pkl")
+        tmp.write(base64.b64decode(token_b64))
+        tmp.flush()
+        tmp.close()
+        return tmp.name
+
+    # 2. Streamlit secrets
     try:
         import streamlit as st
         token_b64 = st.secrets.get("GMAIL_TOKEN_B64", "")
@@ -30,6 +40,8 @@ def _get_token_path() -> str:
             return tmp.name
     except Exception:
         pass
+
+    # 3. Local file
     return GMAIL_TOKEN_FILE
 
 

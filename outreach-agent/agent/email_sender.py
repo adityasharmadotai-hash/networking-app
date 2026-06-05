@@ -30,7 +30,16 @@ def _get_token_path() -> str:
     On Streamlit Cloud, loads the token from st.secrets (GMAIL_TOKEN_B64).
     Locally, uses the file on disk.
     """
-    # Try Streamlit secrets first (cloud deployment)
+    # 1. Plain env var — works on Railway and any cloud server
+    token_b64 = os.getenv("GMAIL_TOKEN_B64", "")
+    if token_b64:
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pkl")
+        tmp.write(base64.b64decode(token_b64))
+        tmp.flush()
+        tmp.close()
+        return tmp.name
+
+    # 2. Streamlit secrets — works on Streamlit Cloud
     try:
         import streamlit as st
         token_b64 = st.secrets.get("GMAIL_TOKEN_B64", "")
@@ -43,7 +52,7 @@ def _get_token_path() -> str:
     except Exception:
         pass
 
-    # Fall back to local file
+    # 3. Fall back to local file (development)
     return GMAIL_TOKEN_FILE
 
 EMAIL_TEMPLATES = {
