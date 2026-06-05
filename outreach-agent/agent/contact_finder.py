@@ -5,10 +5,28 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-WIZA_API_KEY = os.getenv("WIZA_API_KEY")
-SERPAPI_KEY = os.getenv("SERPAPI_KEY")
 SERPAPI_URL = "https://serpapi.com/search.json"
 WIZA_BASE = "https://wiza.co/api"
+
+
+def _get_secret(key: str) -> str:
+    """Read from Streamlit secrets (cloud) or env var (local/Railway)."""
+    try:
+        import streamlit as st
+        val = st.secrets.get(key, "")
+        if val:
+            return val
+    except Exception:
+        pass
+    return os.getenv(key, "")
+
+
+def _wiza_key() -> str:
+    return _get_secret("WIZA_API_KEY")
+
+
+def _serpapi_key() -> str:
+    return _get_secret("SERPAPI_KEY")
 
 # Priority order of titles to search for at each company
 TITLE_PRIORITY = [
@@ -33,7 +51,7 @@ def find_linkedin_url(company_name: str, title: str) -> str | None:
         "engine": "google",
         "q": query,
         "num": 3,
-        "api_key": SERPAPI_KEY,
+        "api_key": _serpapi_key(),
     }
     try:
         r = requests.get(SERPAPI_URL, params=params, timeout=15)
@@ -51,7 +69,7 @@ def find_linkedin_url(company_name: str, title: str) -> str | None:
 def start_wiza_reveal(linkedin_url: str) -> str | None:
     """Submit a LinkedIn URL to Wiza and return the reveal ID."""
     headers = {
-        "Authorization": f"Bearer {WIZA_API_KEY}",
+        "Authorization": f"Bearer {_wiza_key()}",
         "Content-Type": "application/json",
     }
     payload = {
@@ -79,7 +97,7 @@ def start_wiza_reveal(linkedin_url: str) -> str | None:
 
 def poll_wiza_reveal(reveal_id: str, max_wait: int = 60) -> dict | None:
     """Poll Wiza until the reveal is complete or timeout. Returns contact data."""
-    headers = {"Authorization": f"Bearer {WIZA_API_KEY}"}
+    headers = {"Authorization": f"Bearer {_wiza_key()}"}
     start = time.time()
 
     while time.time() - start < max_wait:

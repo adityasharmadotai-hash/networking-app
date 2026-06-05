@@ -18,9 +18,33 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-SERPAPI_KEY    = os.getenv("SERPAPI_KEY")
-ADZUNA_APP_ID  = os.getenv("ADZUNA_APP_ID", "")
-ADZUNA_APP_KEY = os.getenv("ADZUNA_APP_KEY", "")
+def _get_secret(key: str, default: str = "") -> str:
+    """Read from Streamlit secrets (cloud) or env var (local/Railway)."""
+    try:
+        import streamlit as st
+        val = st.secrets.get(key, "")
+        if val:
+            return val
+    except Exception:
+        pass
+    return os.getenv(key, default)
+
+
+def _serpapi_key() -> str:
+    return _get_secret("SERPAPI_KEY")
+
+
+def _adzuna_id() -> str:
+    return _get_secret("ADZUNA_APP_ID")
+
+
+def _adzuna_key() -> str:
+    return _get_secret("ADZUNA_APP_KEY")
+
+
+SERPAPI_KEY    = None  # loaded at runtime via _serpapi_key()
+ADZUNA_APP_ID  = None  # loaded at runtime via _adzuna_id()
+ADZUNA_APP_KEY = None  # loaded at runtime via _adzuna_key()
 SERPAPI_URL    = "https://serpapi.com/search.json"
 
 ALL_ROLES = [
@@ -80,7 +104,7 @@ def _search_serpapi(role: str, location: str = None, num: int = 10) -> list[dict
         "q":        f"{role} {location}" if location else role,
         "chips":    "date_posted:week",   # 'today' often returns 0 on free plans
         "num":      num,
-        "api_key":  SERPAPI_KEY,
+        "api_key":  _serpapi_key(),
     }
     if location and location.lower() not in ("remote", "usa", "united states"):
         params["location"] = location
@@ -215,13 +239,13 @@ def _search_muse(role: str, location: str = None, num: int = 10) -> list[dict]:
 
 def _search_adzuna(role: str, location: str = None, num: int = 10) -> list[dict]:
     """Query Adzuna jobs API (free tier — register at developer.adzuna.com)."""
-    if not ADZUNA_APP_ID or not ADZUNA_APP_KEY:
+    if not _adzuna_id() or not _adzuna_key():
         return []
 
     try:
         params = {
-            "app_id":          ADZUNA_APP_ID,
-            "app_key":         ADZUNA_APP_KEY,
+            "app_id":          _adzuna_id(),
+            "app_key":         _adzuna_key(),
             "results_per_page": num,
             "what":            role,
             "max_days_old":    7,
@@ -268,7 +292,7 @@ def _search_with_fallbacks(role: str, location: str, num: int) -> list[dict]:
     and merge results.
     """
     # 1. SerpAPI
-    if SERPAPI_KEY and not _serpapi_quota_exhausted:
+    if _serpapi_key() and not _serpapi_quota_exhausted:
         results = _search_serpapi(role, location, num)
         if results:
             return [_parse_serpapi_job(j, role, location) for j in results]
