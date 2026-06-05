@@ -2,5 +2,5 @@
 builder = "nixpacks"
 
 [deploy]
-startCommand = "cd /app && python3 scheduler.py"
+startCommand = "python3 outreach-agent/scheduler.py"
 restartPolicyType = "always"
