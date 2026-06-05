@@ -30,14 +30,16 @@ def _get_token_path() -> str:
 
     # 2. Streamlit secrets
     try:
-        import streamlit as st
-        token_b64 = st.secrets.get("GMAIL_TOKEN_B64", "")
-        if token_b64:
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pkl")
-            tmp.write(base64.b64decode(token_b64))
-            tmp.flush()
-            tmp.close()
-            return tmp.name
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+        if get_script_run_ctx() is not None:
+            import streamlit as st
+            token_b64 = st.secrets.get("GMAIL_TOKEN_B64", "")
+            if token_b64:
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pkl")
+                tmp.write(base64.b64decode(token_b64))
+                tmp.flush()
+                tmp.close()
+                return tmp.name
     except Exception:
         pass
 

@@ -2,5 +2,5 @@
 builder = "nixpacks"
 
 [deploy]
-startCommand = "python3 scheduler.py"
+startCommand = "cd /app && python3 scheduler.py"
 restartPolicyType = "always"
