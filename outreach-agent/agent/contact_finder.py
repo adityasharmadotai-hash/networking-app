@@ -98,18 +98,20 @@ def _find_linkedin_via_google_cse(query: str) -> str | None:
 
 
 def find_linkedin_url(company_name: str, title: str) -> str | None:
-    """Find a LinkedIn profile URL — SerpAPI first, Google CSE as fallback."""
-    # Use keyword form instead of site: operator — Bing/Google ignore site: for LinkedIn
-    query = f'"{title}" "{company_name}" linkedin.com/in'
+    """Find a LinkedIn profile URL — tries two query styles, then Google CSE."""
+    queries = [
+        f'site:linkedin.com "{title}" "{company_name}"',       # Google supports site:linkedin.com
+        f'"{title}" "{company_name}" linkedin.com/in',          # keyword fallback
+    ]
 
-    # 1. SerpAPI (Bing, then Google)
-    url = _find_linkedin_via_serpapi(query)
-    if url:
-        return url
+    for query in queries:
+        url = _find_linkedin_via_serpapi(query)
+        if url:
+            return url
 
-    # 2. Google Custom Search API (free 100/day fallback)
+    # Final fallback: Google CSE
     print(f"[Contact Finder] SerpAPI unavailable — trying Google CSE for '{title}' at '{company_name}'")
-    return _find_linkedin_via_google_cse(query)
+    return _find_linkedin_via_google_cse(f'"{title}" "{company_name}" linkedin.com/in')
 
 
 # ── Hunter.io fallback (finds email directly by company domain) ───────────────
