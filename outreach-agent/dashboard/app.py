@@ -155,6 +155,10 @@ with tab_wizard:
                 with st.spinner(f"Searching {len(selected_roles) * len(selected_locations)} combinations..."):
                     jobs = discover_jobs(roles=selected_roles, locations=selected_locations)
                     st.session_state.discovered_jobs = jobs
+                    # Clear all downstream state so Step 4 always reruns fresh
+                    st.session_state.approved_after_dedup = None
+                    st.session_state.enriched_leads = None
+                    st.session_state.final_leads = None
                 st.rerun()
         else:
             jobs = st.session_state.discovered_jobs
@@ -374,6 +378,7 @@ with tab_wizard:
                 st.session_state.email_template_body = new_body
                 st.session_state.followup_templates = followup_updates
                 st.session_state.email_limit = min(email_limit, available)
+                st.session_state.enriched_leads = None  # always rerun contact lookup
                 EMAIL_TEMPLATES["intro"]["subject"] = new_subject
                 EMAIL_TEMPLATES["intro"]["body"] = new_body
                 for k, v in followup_updates.items():
