@@ -413,22 +413,51 @@ with tab_wizard:
                 os.environ["GOOGLE_CSE_API_KEY"] = _secret("GOOGLE_CSE_API_KEY", "")
                 os.environ["GOOGLE_CSE_ID"]      = _secret("GOOGLE_CSE_ID", "")
 
-                from agent.contact_finder import prospect_contact
+                from agent.contact_finder import find_linkedin_url, start_wiza_reveal, poll_wiza_reveal, TITLE_PRIORITY
                 serpapi_ok = bool(os.environ.get("SERPAPI_KEY"))
                 cse_ok     = bool(os.environ.get("GOOGLE_CSE_API_KEY"))
-                st.info(f"🔑 SerpAPI: {'✅' if serpapi_ok else '❌ MISSING'} | CSE: {'✅' if cse_ok else '❌ MISSING'}")
+                wiza_ok    = bool(os.environ.get("WIZA_API_KEY"))
+                st.info(f"🔑 SerpAPI: {'✅' if serpapi_ok else '❌ MISSING'} | CSE: {'✅' if cse_ok else '❌ MISSING'} | Wiza: {'✅' if wiza_ok else '❌ MISSING'}")
 
                 progress = st.progress(0)
                 status_text = st.empty()
+                log_area = st.expander("🔍 Live lookup log (click to expand)", expanded=True)
+                log_lines = []
                 results = []
 
+                def add_log(msg):
+                    log_lines.append(msg)
+                    log_area.markdown("\n\n".join(log_lines[-30:]))
+
                 for i, job in enumerate(companies[:limit]):
-                    status_text.text(f"Looking up {job['company_name']}... ({i+1}/{limit})")
+                    company = job["company_name"]
+                    status_text.text(f"Looking up {company}... ({i+1}/{limit})")
+                    contact = None
+                    add_log(f"**{company}** — searching LinkedIn...")
                     try:
-                        contact = prospect_contact(job["company_name"])
+                        linkedin_url = None
+                        for title in TITLE_PRIORITY:
+                            linkedin_url = find_linkedin_url(company, title)
+                            if linkedin_url:
+                                add_log(f"  ✅ LinkedIn found ({title}): `{linkedin_url}`")
+                                break
+                        if not linkedin_url:
+                            add_log(f"  ❌ No LinkedIn URL found — skipping")
+                        else:
+                            add_log(f"  ⏳ Submitting to Wiza...")
+                            reveal_id = start_wiza_reveal(linkedin_url)
+                            if not reveal_id:
+                                add_log(f"  ❌ Wiza reveal failed (bad key or quota?)")
+                            else:
+                                add_log(f"  ⏳ Polling Wiza (id: {reveal_id})...")
+                                contact = poll_wiza_reveal(reveal_id, max_wait=420)
+                                if contact:
+                                    add_log(f"  ✅ Got email: {contact.get('contact_email')} ({contact.get('contact_name')})")
+                                else:
+                                    add_log(f"  ❌ Wiza returned no valid work email")
                     except Exception as e:
-                        contact = None
-                        st.warning(f"Error for {job['company_name']}: {e}")
+                        add_log(f"  ❌ Exception: {e}")
+                        st.warning(f"Error for {company}: {e}")
                     if contact:
                         job.update(contact)
                     else:
