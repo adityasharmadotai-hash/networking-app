@@ -392,46 +392,53 @@ with tab_wizard:
     elif st.session_state.step == 4:
         st.header("Step 4: Review Contacts & Send Emails")
 
-        if st.session_state.enriched_leads is None:
-            companies = st.session_state.approved_after_dedup or []
-            limit = min(len(companies), st.session_state.get("email_limit", DAILY_EMAIL_LIMIT))
-            st.warning(f"DEBUG: {len(companies)} companies in queue, limit={limit}, email_limit={st.session_state.get('email_limit')}")
-            st.info(f"Finding contacts for **{limit} companies** via LinkedIn + Wiza. This takes 10–20 minutes. Please wait...")
+        companies = st.session_state.approved_after_dedup or []
 
-            progress = st.progress(0)
-            status_text = st.empty()
-            results = []
-
-            # Inject secrets into env vars so contact_finder can read them reliably
-            os.environ["SERPAPI_KEY"]        = _secret("SERPAPI_KEY", "")
-            os.environ["WIZA_API_KEY"]       = _secret("WIZA_API_KEY", "")
-            os.environ["GOOGLE_CSE_API_KEY"] = _secret("GOOGLE_CSE_API_KEY", "")
-            os.environ["GOOGLE_CSE_ID"]      = _secret("GOOGLE_CSE_ID", "")
-
-            from agent.contact_finder import prospect_contact
-            serpapi_ok = bool(os.environ.get("SERPAPI_KEY"))
-            cse_ok     = bool(os.environ.get("GOOGLE_CSE_API_KEY"))
-            st.info(f"🔑 SerpAPI: {'✅' if serpapi_ok else '❌ MISSING'} | CSE: {'✅' if cse_ok else '❌ MISSING'}")
-
-            for i, job in enumerate(companies[:limit]):
-                status_text.text(f"Looking up {job['company_name']}... ({i+1}/{limit})")
-                try:
-                    contact = prospect_contact(job["company_name"])
-                except Exception as e:
-                    contact = None
-                    st.warning(f"Error for {job['company_name']}: {e}")
-                if contact:
-                    job.update(contact)
-                else:
-                    job["contact_email"] = None
-                results.append(job)
-                progress.progress((i + 1) / limit)
-
-            st.session_state.enriched_leads = results
-            status_text.text("✅ Contact lookup complete!")
-            st.rerun()
-
+        if not companies:
+            st.error("⚠️ No companies in the queue. Please go back and complete Steps 1–3.")
+            if st.button("← Go back to Step 1", type="primary"):
+                for key in ["discovered_jobs", "approved_jobs", "dedup_removed", "dedup_kept",
+                            "approved_after_dedup", "enriched_leads", "final_leads"]:
+                    st.session_state[key] = None
+                st.session_state.step = 1
+                st.rerun()
         else:
+            if st.session_state.enriched_leads is None:
+                limit = min(len(companies), st.session_state.get("email_limit", DAILY_EMAIL_LIMIT))
+                st.info(f"Finding contacts for **{limit} companies** via LinkedIn + Wiza. This takes 10–20 minutes. Please wait...")
+
+                # Inject secrets into env vars so contact_finder can read them reliably
+                os.environ["SERPAPI_KEY"]        = _secret("SERPAPI_KEY", "")
+                os.environ["WIZA_API_KEY"]       = _secret("WIZA_API_KEY", "")
+                os.environ["GOOGLE_CSE_API_KEY"] = _secret("GOOGLE_CSE_API_KEY", "")
+                os.environ["GOOGLE_CSE_ID"]      = _secret("GOOGLE_CSE_ID", "")
+
+                from agent.contact_finder import prospect_contact
+                serpapi_ok = bool(os.environ.get("SERPAPI_KEY"))
+                cse_ok     = bool(os.environ.get("GOOGLE_CSE_API_KEY"))
+                st.info(f"🔑 SerpAPI: {'✅' if serpapi_ok else '❌ MISSING'} | CSE: {'✅' if cse_ok else '❌ MISSING'}")
+
+                progress = st.progress(0)
+                status_text = st.empty()
+                results = []
+
+                for i, job in enumerate(companies[:limit]):
+                    status_text.text(f"Looking up {job['company_name']}... ({i+1}/{limit})")
+                    try:
+                        contact = prospect_contact(job["company_name"])
+                    except Exception as e:
+                        contact = None
+                        st.warning(f"Error for {job['company_name']}: {e}")
+                    if contact:
+                        job.update(contact)
+                    else:
+                        job["contact_email"] = None
+                    results.append(job)
+                    progress.progress((i + 1) / limit)
+
+                status_text.text("✅ Contact lookup complete!")
+                st.session_state.enriched_leads = results
+
             leads = st.session_state.enriched_leads
             found = [l for l in leads if l.get("contact_email")]
             not_found = [l for l in leads if not l.get("contact_email")]
