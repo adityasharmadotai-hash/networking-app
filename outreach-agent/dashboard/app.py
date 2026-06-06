@@ -420,27 +420,25 @@ with tab_wizard:
                 wiza_ok    = bool(os.environ.get("WIZA_API_KEY"))
                 st.info(f"🔑 SerpAPI: {'✅' if serpapi_key else '❌ MISSING'} | CSE: {'✅' if cse_ok else '❌ MISSING'} | Wiza: {'✅' if wiza_ok else '❌ MISSING'}")
 
-                # ── One-shot diagnostic: test SerpAPI Bing with a known query ──
+                # ── One-shot diagnostic: test both engines with a known query ──
                 with st.expander("🛠 SerpAPI diagnostic (auto-test)", expanded=True):
-                    try:
-                        _test_r = _req.get(
-                            "https://serpapi.com/search.json",
-                            params={"engine": "bing", "q": '"Head of Talent" "Stripe" linkedin.com/in',
-                                    "num": 5, "api_key": serpapi_key},
-                            timeout=15,
-                        )
-                        _test_data = _test_r.json()
-                        _organic = _test_data.get("organic_results", [])
-                        _err = _test_data.get("error", "")
-                        st.write(f"**Status:** {_test_r.status_code} | **organic_results:** {len(_organic)} | **error:** `{_err or 'none'}`")
-                        if _organic:
-                            st.write(f"First result: `{_organic[0].get('link','')}`")
-                        else:
-                            st.write("**Raw keys in response:**", list(_test_data.keys()))
-                            if "search_information" in _test_data:
-                                st.write(_test_data["search_information"])
-                    except Exception as _ex:
-                        st.error(f"Diagnostic call failed: {_ex}")
+                    _query = '"Head of Talent" "Stripe" linkedin.com/in'
+                    for _eng in ("bing", "google"):
+                        try:
+                            _test_r = _req.get(
+                                "https://serpapi.com/search.json",
+                                params={"engine": _eng, "q": _query, "num": 5, "api_key": serpapi_key},
+                                timeout=15,
+                            )
+                            _test_data = _test_r.json()
+                            _organic = _test_data.get("organic_results", [])
+                            _err = _test_data.get("error", "")
+                            st.write(f"**{_eng.upper()}** — Status: {_test_r.status_code} | results: {len(_organic)} | error: `{_err or 'none'}`")
+                            for _r in _organic[:3]:
+                                _link = _r.get("link") or _r.get("url") or str(list(_r.keys()))
+                                st.write(f"  • `{_link}`")
+                        except Exception as _ex:
+                            st.error(f"{_eng} diagnostic failed: {_ex}")
 
                 progress = st.progress(0)
                 status_text = st.empty()
