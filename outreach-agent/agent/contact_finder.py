@@ -44,23 +44,19 @@ TITLE_PRIORITY = [
 ]
 
 
-_serpapi_linkedin_exhausted = False
-
-
 def _find_linkedin_via_serpapi(query: str) -> str | None:
     """Find LinkedIn URL via SerpAPI Google search."""
-    global _serpapi_linkedin_exhausted
-    if _serpapi_linkedin_exhausted or not _serpapi_key():
+    if not _serpapi_key():
         return None
     try:
         params = {"engine": "google", "q": query, "num": 3, "api_key": _serpapi_key()}
-        r = requests.get(SERPAPI_URL, params=params, timeout=15)
+        r = requests.get(SERPAPI_URL, params=params, timeout=20)
         if r.status_code == 429:
-            _serpapi_linkedin_exhausted = True
+            print("[Contact Finder] SerpAPI quota exhausted.")
             return None
         data = r.json()
-        if "error" in data and "run out" in data["error"].lower():
-            _serpapi_linkedin_exhausted = True
+        if "error" in data:
+            print(f"[Contact Finder] SerpAPI error: {data['error']}")
             return None
         for result in data.get("organic_results", []):
             link = result.get("link", "")
@@ -256,7 +252,7 @@ def poll_wiza_reveal(reveal_id: str, max_wait: int = 60) -> dict | None:
 
 
 def prospect_contact(company_name: str) -> dict | None:
-    """Find the best contact at a company: LinkedIn URL (SerpAPI/Google CSE) → Wiza email."""
+    """Find best contact: LinkedIn URL via SerpAPI or Google CSE → Wiza for email."""
     for title in TITLE_PRIORITY:
         print(f"[Contact Finder] Searching LinkedIn: '{title}' at '{company_name}'")
         linkedin_url = find_linkedin_url(company_name, title)
