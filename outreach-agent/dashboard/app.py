@@ -413,36 +413,50 @@ with tab_wizard:
                 os.environ["GOOGLE_CSE_API_KEY"] = _secret("GOOGLE_CSE_API_KEY", "")
                 os.environ["GOOGLE_CSE_ID"]      = _secret("GOOGLE_CSE_ID", "")
 
-                from agent.contact_finder import find_linkedin_url, start_wiza_reveal, poll_wiza_reveal, TITLE_PRIORITY
-                import requests as _req
-                serpapi_key = os.environ.get("SERPAPI_KEY", "")
-                cse_ok     = bool(os.environ.get("GOOGLE_CSE_API_KEY"))
-                wiza_ok    = bool(os.environ.get("WIZA_API_KEY"))
-                st.info(f"🔑 SerpAPI: {'✅' if serpapi_key else '❌ MISSING'} | CSE: {'✅' if cse_ok else '❌ MISSING'} | Wiza: {'✅' if wiza_ok else '❌ MISSING'}")
+                from agent.contact_finder import (
+                    find_linkedin_url, start_wiza_reveal, poll_wiza_reveal,
+                    TITLE_PRIORITY, _mask, serpapi_account_info, _find_linkedin_via_serpapi,
+                )
 
-                # ── One-shot diagnostic: test two query styles on Google ──
-                _test_company = companies[0]["company_name"] if companies else "Stripe"
-                with st.expander("🛠 SerpAPI diagnostic (auto-test)", expanded=True):
-                    st.write(f"Testing company: **{_test_company}**")
-                    for _qstyle, _q in [
-                        ("keyword", f'"Head of Talent" "{_test_company}" linkedin.com/in'),
-                        ("site:", f'site:linkedin.com "Head of Talent" "{_test_company}"'),
-                    ]:
-                        try:
-                            _test_r = _req.get(
-                                "https://serpapi.com/search.json",
-                                params={"engine": "google", "q": _q, "num": 5, "api_key": serpapi_key},
-                                timeout=15,
-                            )
-                            _test_data = _test_r.json()
-                            _organic = _test_data.get("organic_results", [])
-                            _err = _test_data.get("error", "")
-                            st.write(f"**{_qstyle}** — results: {len(_organic)} | error: `{_err or 'none'}`")
-                            for _r in _organic[:3]:
-                                _link = _r.get("link", "")
-                                st.write(f"  • `{_link}`")
-                        except Exception as _ex:
-                            st.error(f"{_qstyle} diagnostic failed: {_ex}")
+                # ── Diagnostics: keys, quota, and a live LinkedIn test ──────────
+                with st.expander("🛠 Contact-lookup diagnostics", expanded=True):
+                    st.markdown("**1) API keys detected (cloud secrets / env):**")
+                    st.write(f"- SerpAPI: `{_mask(os.environ.get('SERPAPI_KEY',''))}`")
+                    st.write(f"- Wiza: `{_mask(os.environ.get('WIZA_API_KEY',''))}`")
+                    st.write(f"- Google CSE key: `{_mask(os.environ.get('GOOGLE_CSE_API_KEY',''))}`")
+                    st.write(f"- Google CSE id: `{_mask(os.environ.get('GOOGLE_CSE_ID',''))}`")
+
+                    if not os.environ.get("SERPAPI_KEY") and not os.environ.get("GOOGLE_CSE_API_KEY"):
+                        st.error("❌ No LinkedIn search provider configured. Add **SERPAPI_KEY** "
+                                 "(and/or Google CSE keys) in your Streamlit Cloud app → Settings → Secrets, "
+                                 "then reboot the app. Without this, no contacts can be found.")
+                    if not os.environ.get("WIZA_API_KEY"):
+                        st.error("❌ **WIZA_API_KEY** missing — even if a LinkedIn profile is found, "
+                                 "the email cannot be revealed. Add it in Settings → Secrets.")
+
+                    st.markdown("**2) SerpAPI account quota:**")
+                    _acct = serpapi_account_info()
+                    if "error" in _acct:
+                        st.warning(f"Could not read SerpAPI account: `{_acct['error']}`")
+                    else:
+                        _left = _acct.get("total_searches_left", _acct.get("plan_searches_left", "?"))
+                        _used = _acct.get("this_month_usage", "?")
+                        st.write(f"- Searches left this month: **{_left}**  |  used: {_used}")
+                        if isinstance(_left, int) and _left <= 0:
+                            st.error("❌ SerpAPI quota is exhausted — this is why LinkedIn search returns nothing. "
+                                     "Upgrade the plan or configure Google CSE as a fallback.")
+
+                    st.markdown("**3) Live LinkedIn search test (first company):**")
+                    _test_company = companies[0]["company_name"] if companies else "Stripe"
+                    st.write(f"Testing: **{_test_company}** / *Head of Talent*")
+                    _diag_lines = []
+                    _u = _find_linkedin_via_serpapi(
+                        f'site:linkedin.com "Head of Talent" "{_test_company}"',
+                        log=lambda m: _diag_lines.append(m),
+                    )
+                    for _l in _diag_lines:
+                        st.write(_l)
+                    st.write(f"→ Result: `{_u or 'no LinkedIn URL found'}`")
 
                 progress = st.progress(0)
                 status_text = st.empty()
@@ -458,12 +472,12 @@ with tab_wizard:
                     company = job["company_name"]
                     status_text.text(f"Looking up {company}... ({i+1}/{limit})")
                     contact = None
-                    add_log(f"**{company}** — searching LinkedIn (Bing + Google)...")
+                    add_log(f"**{company}** — searching LinkedIn via SerpAPI (Google)...")
                     try:
                         linkedin_url = None
                         for title in TITLE_PRIORITY:
                             add_log(f"  🔍 Trying: *{title}*")
-                            linkedin_url = find_linkedin_url(company, title)
+                            linkedin_url = find_linkedin_url(company, title, log=add_log)
                             if linkedin_url:
                                 add_log(f"  ✅ LinkedIn found ({title}): `{linkedin_url}`")
                                 break
@@ -471,7 +485,7 @@ with tab_wizard:
                             add_log(f"  ❌ No LinkedIn URL found for any title — skipping")
                         else:
                             add_log(f"  ⏳ Submitting to Wiza...")
-                            reveal_id = start_wiza_reveal(linkedin_url)
+                            reveal_id = start_wiza_reveal(linkedin_url, log=add_log)
                             if not reveal_id:
                                 add_log(f"  ❌ Wiza reveal failed (bad key or quota?)")
                             else:
