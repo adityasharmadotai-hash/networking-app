@@ -433,16 +433,17 @@ with tab_wizard:
                     company = job["company_name"]
                     status_text.text(f"Looking up {company}... ({i+1}/{limit})")
                     contact = None
-                    add_log(f"**{company}** — searching LinkedIn...")
+                    add_log(f"**{company}** — searching LinkedIn (Bing + Google)...")
                     try:
                         linkedin_url = None
-                        for title in TITLE_PRIORITY:
+                        for title in TITLE_PRIORITY[:4]:  # try top 4 titles to save quota
+                            add_log(f"  🔍 Trying: *{title}*")
                             linkedin_url = find_linkedin_url(company, title)
                             if linkedin_url:
                                 add_log(f"  ✅ LinkedIn found ({title}): `{linkedin_url}`")
                                 break
                         if not linkedin_url:
-                            add_log(f"  ❌ No LinkedIn URL found — skipping")
+                            add_log(f"  ❌ No LinkedIn URL found for any title — skipping")
                         else:
                             add_log(f"  ⏳ Submitting to Wiza...")
                             reveal_id = start_wiza_reveal(linkedin_url)

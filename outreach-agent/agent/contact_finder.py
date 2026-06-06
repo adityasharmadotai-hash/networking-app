@@ -50,25 +50,30 @@ TITLE_PRIORITY = [
 
 
 def _find_linkedin_via_serpapi(query: str) -> str | None:
-    """Find LinkedIn URL via SerpAPI Google search."""
+    """Find LinkedIn URL via SerpAPI — tries Bing first (indexes LinkedIn better), then Google."""
     if not _serpapi_key():
         return None
-    try:
-        params = {"engine": "google", "q": query, "num": 3, "api_key": _serpapi_key()}
-        r = requests.get(SERPAPI_URL, params=params, timeout=20)
-        if r.status_code == 429:
-            print("[Contact Finder] SerpAPI quota exhausted.")
-            return None
-        data = r.json()
-        if "error" in data:
-            print(f"[Contact Finder] SerpAPI error: {data['error']}")
-            return None
-        for result in data.get("organic_results", []):
-            link = result.get("link", "")
-            if "linkedin.com/in/" in link:
-                return link
-    except Exception as e:
-        print(f"[Contact Finder] SerpAPI error: {e}")
+
+    for engine in ("bing", "google"):
+        try:
+            params = {"engine": engine, "q": query, "num": 5, "api_key": _serpapi_key()}
+            r = requests.get(SERPAPI_URL, params=params, timeout=20)
+            if r.status_code == 429:
+                print(f"[Contact Finder] SerpAPI quota exhausted ({engine}).")
+                return None
+            data = r.json()
+            if "error" in data:
+                print(f"[Contact Finder] SerpAPI {engine} error: {data['error']}")
+                continue
+            # Bing uses "organic_results"; Google uses "organic_results" too
+            for result in data.get("organic_results", []):
+                link = result.get("link", "") or result.get("url", "")
+                if "linkedin.com/in/" in link:
+                    print(f"[Contact Finder] Found via SerpAPI/{engine}: {link}")
+                    return link.split("?")[0]
+        except Exception as e:
+            print(f"[Contact Finder] SerpAPI {engine} error: {e}")
+
     return None
 
 
