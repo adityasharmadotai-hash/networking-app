@@ -388,8 +388,9 @@ with tab_wizard:
         st.header("Step 4: Review Contacts & Send Emails")
 
         if st.session_state.enriched_leads is None:
-            companies = st.session_state.approved_after_dedup
+            companies = st.session_state.approved_after_dedup or []
             limit = min(len(companies), st.session_state.get("email_limit", DAILY_EMAIL_LIMIT))
+            st.warning(f"DEBUG: {len(companies)} companies in queue, limit={limit}, email_limit={st.session_state.get('email_limit')}")
             st.info(f"Finding contacts for **{limit} companies** via LinkedIn + Wiza. This takes 10–20 minutes. Please wait...")
 
             progress = st.progress(0)
