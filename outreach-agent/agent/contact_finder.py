@@ -33,6 +33,30 @@ def _wiza_key() -> str:
 def _serpapi_key() -> str:
     return _get_secret("SERPAPI_KEY")
 
+
+def _mask(key: str) -> str:
+    """Mask a secret for safe display in the UI/logs."""
+    if not key:
+        return "❌ MISSING"
+    if len(key) <= 8:
+        return "✅ set (short)"
+    return f"✅ {key[:4]}…{key[-4:]} (len {len(key)})"
+
+
+def serpapi_account_info() -> dict:
+    """Query SerpAPI's account endpoint for remaining monthly quota.
+    Returns the raw JSON or an {'error': ...} dict."""
+    key = _serpapi_key()
+    if not key:
+        return {"error": "SERPAPI_KEY not set"}
+    try:
+        r = requests.get("https://serpapi.com/account", params={"api_key": key}, timeout=15)
+        if r.status_code != 200:
+            return {"error": f"HTTP {r.status_code}: {r.text[:150]}"}
+        return r.json()
+    except Exception as e:
+        return {"error": str(e)}
+
 # Priority order of titles to search for at each company
 TITLE_PRIORITY = [
     "Head of Talent",
@@ -49,35 +73,42 @@ TITLE_PRIORITY = [
 ]
 
 
-def _find_linkedin_via_serpapi(query: str) -> str | None:
-    """Find LinkedIn URL via SerpAPI Google engine (Bing ignores quoted phrases — useless for this)."""
-    if not _serpapi_key():
+def _find_linkedin_via_serpapi(query: str, log=print) -> str | None:
+    """Find LinkedIn URL via SerpAPI Google engine (Bing ignores quoted phrases — useless for this).
+    `log` is a callback (defaults to print) so the dashboard can surface detail in the UI."""
+    key = _serpapi_key()
+    if not key:
+        log("    ⚠️ SerpAPI key MISSING — cannot search. Set SERPAPI_KEY in Streamlit secrets.")
         return None
     try:
-        params = {"engine": "google", "q": query, "num": 5, "api_key": _serpapi_key()}
+        params = {"engine": "google", "q": query, "num": 5, "api_key": key}
         r = requests.get(SERPAPI_URL, params=params, timeout=20)
         if r.status_code == 429:
-            print("[Contact Finder] SerpAPI quota exhausted.")
+            log("    ⚠️ SerpAPI HTTP 429 — monthly quota / rate limit exhausted.")
+            return None
+        if r.status_code != 200:
+            log(f"    ⚠️ SerpAPI HTTP {r.status_code}: {r.text[:150]}")
             return None
         data = r.json()
         if "error" in data:
-            print(f"[Contact Finder] SerpAPI error: {data['error']}")
+            log(f"    ⚠️ SerpAPI error: {data['error']}")
             return None
-        for result in data.get("organic_results", []):
-            link = result.get("link", "")
-            if "linkedin.com/in/" in link:
-                print(f"[Contact Finder] Found via SerpAPI/Google: {link}")
-                return link.split("?")[0]
+        organic = data.get("organic_results", [])
+        in_links = [res.get("link", "") for res in organic if "linkedin.com/in/" in res.get("link", "")]
+        log(f"    SerpAPI: {len(organic)} organic results, {len(in_links)} linkedin.com/in")
+        if in_links:
+            return in_links[0].split("?")[0]
     except Exception as e:
-        print(f"[Contact Finder] SerpAPI error: {e}")
+        log(f"    ⚠️ SerpAPI exception: {e}")
     return None
 
 
-def _find_linkedin_via_google_cse(query: str) -> str | None:
+def _find_linkedin_via_google_cse(query: str, log=print) -> str | None:
     """Fallback: Google Custom Search API (free: 100 queries/day)."""
     api_key = _get_secret("GOOGLE_CSE_API_KEY")
     cx      = _get_secret("GOOGLE_CSE_ID")
     if not api_key or not cx:
+        log("    ⚠️ Google CSE not configured (GOOGLE_CSE_API_KEY / GOOGLE_CSE_ID missing) — no fallback.")
         return None
     try:
         r = requests.get(
@@ -86,18 +117,21 @@ def _find_linkedin_via_google_cse(query: str) -> str | None:
             timeout=12,
         )
         if not r.ok:
-            print(f"[Contact Finder] Google CSE error: {r.status_code} {r.text[:100]}")
+            log(f"    ⚠️ Google CSE error: {r.status_code} {r.text[:100]}")
             return None
-        for item in r.json().get("items", []):
+        items = r.json().get("items", [])
+        for item in items:
             link = item.get("link", "")
             if "linkedin.com/in/" in link:
+                log(f"    ✅ Google CSE found: {link}")
                 return link.split("?")[0]
+        log(f"    Google CSE: {len(items)} results, 0 linkedin.com/in")
     except Exception as e:
-        print(f"[Contact Finder] Google CSE error: {e}")
+        log(f"    ⚠️ Google CSE exception: {e}")
     return None
 
 
-def find_linkedin_url(company_name: str, title: str) -> str | None:
+def find_linkedin_url(company_name: str, title: str, log=print) -> str | None:
     """Find a LinkedIn profile URL — tries two query styles, then Google CSE."""
     queries = [
         f'site:linkedin.com "{title}" "{company_name}"',       # Google supports site:linkedin.com
@@ -105,13 +139,13 @@ def find_linkedin_url(company_name: str, title: str) -> str | None:
     ]
 
     for query in queries:
-        url = _find_linkedin_via_serpapi(query)
+        url = _find_linkedin_via_serpapi(query, log=log)
         if url:
             return url
 
     # Final fallback: Google CSE
-    print(f"[Contact Finder] SerpAPI unavailable — trying Google CSE for '{title}' at '{company_name}'")
-    return _find_linkedin_via_google_cse(f'"{title}" "{company_name}" linkedin.com/in')
+    log(f"    SerpAPI found nothing — trying Google CSE fallback")
+    return _find_linkedin_via_google_cse(f'"{title}" "{company_name}" linkedin.com/in', log=log)
 
 
 # ── Hunter.io fallback (finds email directly by company domain) ───────────────
@@ -185,8 +219,11 @@ def _hunter_domain_search(company_name: str) -> dict | None:
     return None
 
 
-def start_wiza_reveal(linkedin_url: str) -> str | None:
+def start_wiza_reveal(linkedin_url: str, log=print) -> str | None:
     """Submit a LinkedIn URL to Wiza and return the reveal ID."""
+    if not _wiza_key():
+        log("    ⚠️ Wiza key MISSING — cannot reveal email. Set WIZA_API_KEY in Streamlit secrets.")
+        return None
     headers = {
         "Authorization": f"Bearer {_wiza_key()}",
         "Content-Type": "application/json",
@@ -208,9 +245,9 @@ def start_wiza_reveal(linkedin_url: str) -> str | None:
             reveal_id = data.get("id") or data.get("data", {}).get("id")
             return str(reveal_id) if reveal_id else None
         else:
-            print(f"[Contact Finder] Wiza reveal error: {r.status_code} {r.text[:200]}")
+            log(f"    ⚠️ Wiza reveal error: HTTP {r.status_code} {r.text[:200]}")
     except Exception as e:
-        print(f"[Contact Finder] Wiza submit error: {e}")
+        log(f"    ⚠️ Wiza submit error: {e}")
     return None
 
 
