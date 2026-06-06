@@ -396,28 +396,22 @@ with tab_wizard:
             status_text = st.empty()
             results = []
 
-            debug_log = st.empty()
-            log_lines = []
+            from agent.contact_finder import prospect_contact, _serpapi_key, _get_secret
+            serpapi_ok = bool(_serpapi_key())
+            cse_ok = bool(_get_secret("GOOGLE_CSE_API_KEY"))
+            st.info(f"🔑 SerpAPI key loaded: {'✅' if serpapi_ok else '❌ MISSING'} | Google CSE key loaded: {'✅' if cse_ok else '❌ MISSING'}")
 
             for i, job in enumerate(companies[:limit]):
                 status_text.text(f"Looking up {job['company_name']}... ({i+1}/{limit})")
-                from agent.contact_finder import prospect_contact, _serpapi_key, _get_secret
-                serpapi_ok = bool(_serpapi_key())
-                cse_ok = bool(_get_secret("GOOGLE_CSE_API_KEY"))
-                log_lines.append(f"🔍 {job['company_name']} | SerpAPI={'✅' if serpapi_ok else '❌'} CSE={'✅' if cse_ok else '❌'}")
-                debug_log.text("\n".join(log_lines[-5:]))
                 try:
                     contact = prospect_contact(job["company_name"])
                 except Exception as e:
                     contact = None
-                    log_lines.append(f"  ❌ Error: {e}")
+                    st.warning(f"Error for {job['company_name']}: {e}")
                 if contact:
                     job.update(contact)
-                    log_lines.append(f"  ✅ Found: {contact.get('contact_name')} <{contact.get('contact_email')}>")
                 else:
                     job["contact_email"] = None
-                    log_lines.append(f"  ❌ No contact found")
-                debug_log.text("\n".join(log_lines[-8:]))
                 results.append(job)
                 progress.progress((i + 1) / limit)
 
