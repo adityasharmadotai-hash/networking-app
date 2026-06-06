@@ -397,10 +397,16 @@ with tab_wizard:
             status_text = st.empty()
             results = []
 
-            from agent.contact_finder import prospect_contact, _serpapi_key, _get_secret
-            serpapi_ok = bool(_serpapi_key())
-            cse_ok = bool(_get_secret("GOOGLE_CSE_API_KEY"))
-            st.info(f"🔑 SerpAPI key loaded: {'✅' if serpapi_ok else '❌ MISSING'} | Google CSE key loaded: {'✅' if cse_ok else '❌ MISSING'}")
+            # Inject secrets into env vars so contact_finder can read them reliably
+            os.environ["SERPAPI_KEY"]        = _secret("SERPAPI_KEY", "")
+            os.environ["WIZA_API_KEY"]       = _secret("WIZA_API_KEY", "")
+            os.environ["GOOGLE_CSE_API_KEY"] = _secret("GOOGLE_CSE_API_KEY", "")
+            os.environ["GOOGLE_CSE_ID"]      = _secret("GOOGLE_CSE_ID", "")
+
+            from agent.contact_finder import prospect_contact
+            serpapi_ok = bool(os.environ.get("SERPAPI_KEY"))
+            cse_ok     = bool(os.environ.get("GOOGLE_CSE_API_KEY"))
+            st.info(f"🔑 SerpAPI: {'✅' if serpapi_ok else '❌ MISSING'} | CSE: {'✅' if cse_ok else '❌ MISSING'}")
 
             for i, job in enumerate(companies[:limit]):
                 status_text.text(f"Looking up {job['company_name']}... ({i+1}/{limit})")
