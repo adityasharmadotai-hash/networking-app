@@ -103,9 +103,10 @@ def _find_linkedin_via_google_cse(query: str) -> str | None:
 
 def find_linkedin_url(company_name: str, title: str) -> str | None:
     """Find a LinkedIn profile URL — SerpAPI first, Google CSE as fallback."""
-    query = f'site:linkedin.com/in "{title}" "{company_name}"'
+    # Use keyword form instead of site: operator — Bing/Google ignore site: for LinkedIn
+    query = f'"{title}" "{company_name}" linkedin.com/in'
 
-    # 1. SerpAPI
+    # 1. SerpAPI (Bing, then Google)
     url = _find_linkedin_via_serpapi(query)
     if url:
         return url

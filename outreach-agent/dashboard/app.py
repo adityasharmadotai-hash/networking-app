@@ -425,8 +425,8 @@ with tab_wizard:
                     try:
                         _test_r = _req.get(
                             "https://serpapi.com/search.json",
-                            params={"engine": "bing", "q": 'site:linkedin.com/in "Head of Talent" "Stripe"',
-                                    "num": 3, "api_key": serpapi_key},
+                            params={"engine": "bing", "q": '"Head of Talent" "Stripe" linkedin.com/in',
+                                    "num": 5, "api_key": serpapi_key},
                             timeout=15,
                         )
                         _test_data = _test_r.json()
