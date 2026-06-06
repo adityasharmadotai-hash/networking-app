@@ -405,7 +405,6 @@ with tab_wizard:
         else:
             if st.session_state.enriched_leads is None:
                 limit = min(len(companies), st.session_state.get("email_limit", DAILY_EMAIL_LIMIT))
-                st.info(f"Finding contacts for **{limit} companies** via LinkedIn + Wiza. This takes 10–20 minutes. Please wait...")
 
                 # Inject secrets into env vars so contact_finder can read them reliably
                 os.environ["SERPAPI_KEY"]        = _secret("SERPAPI_KEY", "")
@@ -414,98 +413,40 @@ with tab_wizard:
                 os.environ["GOOGLE_CSE_ID"]      = _secret("GOOGLE_CSE_ID", "")
 
                 from agent.contact_finder import (
-                    find_linkedin_url, start_wiza_reveal, poll_wiza_reveal,
-                    TITLE_PRIORITY, _mask, serpapi_account_info, _find_linkedin_via_serpapi,
+                    find_linkedin_url, start_wiza_reveal, poll_wiza_reveal, TITLE_PRIORITY,
                 )
 
-                # ── Diagnostics: keys, quota, and a live LinkedIn test ──────────
-                with st.expander("🛠 Contact-lookup diagnostics", expanded=True):
-                    st.markdown("**1) API keys detected (cloud secrets / env):**")
-                    st.write(f"- SerpAPI: `{_mask(os.environ.get('SERPAPI_KEY',''))}`")
-                    st.write(f"- Wiza: `{_mask(os.environ.get('WIZA_API_KEY',''))}`")
-                    st.write(f"- Google CSE key: `{_mask(os.environ.get('GOOGLE_CSE_API_KEY',''))}`")
-                    st.write(f"- Google CSE id: `{_mask(os.environ.get('GOOGLE_CSE_ID',''))}`")
+                st.info(f"🔎 Finding contacts for **{limit} companies** via LinkedIn + Wiza. "
+                        f"This can take 10–20 minutes — keep this tab open.")
 
-                    if not os.environ.get("SERPAPI_KEY") and not os.environ.get("GOOGLE_CSE_API_KEY"):
-                        st.error("❌ No LinkedIn search provider configured. Add **SERPAPI_KEY** "
-                                 "(and/or Google CSE keys) in your Streamlit Cloud app → Settings → Secrets, "
-                                 "then reboot the app. Without this, no contacts can be found.")
-                    if not os.environ.get("WIZA_API_KEY"):
-                        st.error("❌ **WIZA_API_KEY** missing — even if a LinkedIn profile is found, "
-                                 "the email cannot be revealed. Add it in Settings → Secrets.")
-
-                    st.markdown("**2) SerpAPI account quota:**")
-                    _acct = serpapi_account_info()
-                    if "error" in _acct:
-                        st.warning(f"Could not read SerpAPI account: `{_acct['error']}`")
-                    else:
-                        _left = _acct.get("total_searches_left", _acct.get("plan_searches_left", "?"))
-                        _used = _acct.get("this_month_usage", "?")
-                        st.write(f"- Searches left this month: **{_left}**  |  used: {_used}")
-                        if isinstance(_left, int) and _left <= 0:
-                            st.error("❌ SerpAPI quota is exhausted — this is why LinkedIn search returns nothing. "
-                                     "Upgrade the plan or configure Google CSE as a fallback.")
-
-                    st.markdown("**3) Live LinkedIn search test (first company):**")
-                    _test_company = companies[0]["company_name"] if companies else "Stripe"
-                    st.write(f"Testing: **{_test_company}** / *Head of Talent*")
-                    _diag_lines = []
-                    _u = _find_linkedin_via_serpapi(
-                        f'site:linkedin.com "Head of Talent" "{_test_company}"',
-                        log=lambda m: _diag_lines.append(m),
-                    )
-                    for _l in _diag_lines:
-                        st.write(_l)
-                    st.write(f"→ Result: `{_u or 'no LinkedIn URL found'}`")
-
-                progress = st.progress(0)
-                status_text = st.empty()
-                log_area = st.expander("🔍 Live lookup log (click to expand)", expanded=True)
-                log_lines = []
+                progress = st.progress(0.0, text=f"Starting… (0/{limit})")
                 results = []
 
-                def add_log(msg):
-                    log_lines.append(msg)
-                    log_area.markdown("\n\n".join(log_lines[-30:]))
-
-                for i, job in enumerate(companies[:limit]):
-                    company = job["company_name"]
-                    status_text.text(f"Looking up {company}... ({i+1}/{limit})")
-                    contact = None
-                    add_log(f"**{company}** — searching LinkedIn via SerpAPI (Google)...")
-                    try:
-                        linkedin_url = None
-                        for title in TITLE_PRIORITY:
-                            add_log(f"  🔍 Trying: *{title}*")
-                            linkedin_url = find_linkedin_url(company, title, log=add_log)
+                with st.spinner("Looking up contacts…"):
+                    for i, job in enumerate(companies[:limit]):
+                        company = job["company_name"]
+                        progress.progress(i / limit, text=f"Looking up {company}… ({i + 1}/{limit})")
+                        contact = None
+                        try:
+                            linkedin_url = None
+                            for title in TITLE_PRIORITY:
+                                linkedin_url = find_linkedin_url(company, title)
+                                if linkedin_url:
+                                    break
                             if linkedin_url:
-                                add_log(f"  ✅ LinkedIn found ({title}): `{linkedin_url}`")
-                                break
-                        if not linkedin_url:
-                            add_log(f"  ❌ No LinkedIn URL found for any title — skipping")
+                                reveal_id = start_wiza_reveal(linkedin_url)
+                                if reveal_id:
+                                    contact = poll_wiza_reveal(reveal_id, max_wait=420)
+                        except Exception as e:
+                            st.warning(f"Error looking up {company}: {e}")
+                        if contact:
+                            job.update(contact)
                         else:
-                            add_log(f"  ⏳ Submitting to Wiza...")
-                            reveal_id = start_wiza_reveal(linkedin_url, log=add_log)
-                            if not reveal_id:
-                                add_log(f"  ❌ Wiza reveal failed (bad key or quota?)")
-                            else:
-                                add_log(f"  ⏳ Polling Wiza (id: {reveal_id})...")
-                                contact = poll_wiza_reveal(reveal_id, max_wait=420)
-                                if contact:
-                                    add_log(f"  ✅ Got email: {contact.get('contact_email')} ({contact.get('contact_name')})")
-                                else:
-                                    add_log(f"  ❌ Wiza returned no valid work email")
-                    except Exception as e:
-                        add_log(f"  ❌ Exception: {e}")
-                        st.warning(f"Error for {company}: {e}")
-                    if contact:
-                        job.update(contact)
-                    else:
-                        job["contact_email"] = None
-                    results.append(job)
-                    progress.progress((i + 1) / limit)
+                            job["contact_email"] = None
+                        results.append(job)
+                        progress.progress((i + 1) / limit, text=f"Looked up {company} ({i + 1}/{limit})")
 
-                status_text.text("✅ Contact lookup complete!")
+                progress.progress(1.0, text="✅ Contact lookup complete!")
                 st.session_state.enriched_leads = results
 
             leads = st.session_state.enriched_leads
