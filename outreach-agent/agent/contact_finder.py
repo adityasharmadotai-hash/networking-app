@@ -81,7 +81,7 @@ def _find_linkedin_via_serpapi(query: str, log=print) -> str | None:
         log("    ⚠️ SerpAPI key MISSING — cannot search. Set SERPAPI_KEY in Streamlit secrets.")
         return None
     try:
-        params = {"engine": "google", "q": query, "num": 5, "api_key": key}
+        params = {"engine": "google", "q": query, "num": 10, "api_key": key}
         r = requests.get(SERPAPI_URL, params=params, timeout=20)
         if r.status_code == 429:
             log("    ⚠️ SerpAPI HTTP 429 — monthly quota / rate limit exhausted.")
@@ -98,6 +98,10 @@ def _find_linkedin_via_serpapi(query: str, log=print) -> str | None:
         log(f"    SerpAPI: {len(organic)} organic results, {len(in_links)} linkedin.com/in")
         if in_links:
             return in_links[0].split("?")[0]
+        # No profile links — show what DID come back so we can see why
+        if organic:
+            sample = " | ".join(res.get("link", "")[:70] for res in organic[:3])
+            log(f"      ↳ top results were: {sample}")
     except Exception as e:
         log(f"    ⚠️ SerpAPI exception: {e}")
     return None
@@ -134,8 +138,8 @@ def _find_linkedin_via_google_cse(query: str, log=print) -> str | None:
 def find_linkedin_url(company_name: str, title: str, log=print) -> str | None:
     """Find a LinkedIn profile URL — tries two query styles, then Google CSE."""
     queries = [
-        f'site:linkedin.com "{title}" "{company_name}"',       # Google supports site:linkedin.com
-        f'"{title}" "{company_name}" linkedin.com/in',          # keyword fallback
+        f'site:linkedin.com/in "{title}" "{company_name}"',     # path-level x-ray: profiles only
+        f'site:linkedin.com/in {title} {company_name}',         # looser: drop exact-phrase quotes
     ]
 
     for query in queries:
