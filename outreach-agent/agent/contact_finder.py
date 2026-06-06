@@ -11,6 +11,11 @@ WIZA_BASE = "https://wiza.co/api"
 
 def _get_secret(key: str) -> str:
     """Read from Streamlit secrets (cloud) or env var (local/Railway)."""
+    # Always check env var first — most reliable across all environments
+    val = os.getenv(key, "")
+    if val:
+        return val
+    # Then try Streamlit secrets
     try:
         import streamlit as st
         val = st.secrets.get(key, "")
@@ -18,7 +23,7 @@ def _get_secret(key: str) -> str:
             return val
     except Exception:
         pass
-    return os.getenv(key, "")
+    return ""
 
 
 def _wiza_key() -> str:
