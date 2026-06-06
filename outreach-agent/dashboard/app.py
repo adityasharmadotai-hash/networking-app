@@ -457,7 +457,7 @@ with tab_wizard:
                     add_log(f"**{company}** — searching LinkedIn (Bing + Google)...")
                     try:
                         linkedin_url = None
-                        for title in TITLE_PRIORITY[:4]:  # try top 4 titles to save quota
+                        for title in TITLE_PRIORITY:
                             add_log(f"  🔍 Trying: *{title}*")
                             linkedin_url = find_linkedin_url(company, title)
                             if linkedin_url:
