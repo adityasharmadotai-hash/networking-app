@@ -16,7 +16,6 @@ SENDER_EMAIL = os.getenv("SENDER_EMAIL", "susan@hiregen.co")
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GMAIL_TOKEN_FILE = os.path.join(_BASE_DIR, os.getenv("GMAIL_TOKEN_FILE", "gmail_token.json"))
 GMAIL_CREDENTIALS_FILE = os.path.join(_BASE_DIR, os.getenv("GMAIL_CREDENTIALS_FILE", "gmail_credentials.json"))
-GMAIL_CREDENTIALS_FILE = os.getenv("GMAIL_CREDENTIALS_FILE", "gmail_credentials.json")
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.send",
     "https://www.googleapis.com/auth/spreadsheets.readonly",

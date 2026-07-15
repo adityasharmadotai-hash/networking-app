@@ -638,7 +638,7 @@ with tab_wizard:
 
                         total_mins = delay_seconds // 60
                         st.success(f"🗓️ **{len(approved_leads)} emails scheduled!** Over ~{total_mins} mins with random 1–3 min gaps.")
-                        st.info("⚠️ Make sure the **scheduler is running** (`python3 scheduler.py`) — it sends emails even after you close this app.")
+                        st.info("📤 The background worker delivers these automatically (8am–6pm PT) — you can safely close this tab.")
                         st.balloons()
 
             if st.session_state.send_complete:
@@ -650,7 +650,7 @@ with tab_wizard:
                         for item in st.session_state.schedule_preview:
                             st.write(f"🕐 **{item['send_at']}** → {item['name']} @ {item['company']}")
 
-                st.warning("Make sure `python3 scheduler.py` is running in your terminal to deliver the emails.")
+                st.caption("📤 Delivered automatically by the background worker (scheduler) — no further action needed.")
 
                 if st.button("🔁 Start a New Outreach Run", type="primary", use_container_width=True):
                     for key in ["discovered_jobs", "approved_jobs", "dedup_removed", "dedup_kept",
@@ -972,6 +972,9 @@ with tab_layoffs:
                     from agent.layoff_filter import run_layoff_scan
                     new_hits = run_layoff_scan()
                     st.success(f"Scan complete — {len(new_hits)} new company(ies) found.")
+                except ImportError:
+                    st.info("🚧 Layoff scanning isn't enabled in this deployment yet "
+                            "(the `agent/layoff_filter.py` module hasn't been added).")
                 except Exception as scan_err:
                     st.error(f"Scan failed: {scan_err}")
 
