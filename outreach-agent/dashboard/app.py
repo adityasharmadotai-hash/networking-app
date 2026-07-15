@@ -1,5 +1,6 @@
 import os
 import sys
+import hmac
 import uuid
 import random
 import pickle
@@ -39,6 +40,54 @@ st.markdown("""
 thead tr th { background-color: #f0f2f6 !important; font-weight: 600; }
 </style>
 """, unsafe_allow_html=True)
+
+
+# ── Static login gate ─────────────────────────────────────────────────────────
+# Credentials are read from Streamlit secrets / env vars when present, and fall
+# back to the built-in defaults otherwise. To override securely (recommended for
+# a public repo), set APP_LOGIN_EMAIL and APP_LOGIN_PASSWORD in your secrets.
+def _check_credentials(email: str, password: str) -> bool:
+    expected_email = _secret("APP_LOGIN_EMAIL", "devraj@adityasharma.ai")
+    expected_password = _secret("APP_LOGIN_PASSWORD", "DEV@12#$")
+    # Constant-time comparison to avoid leaking length/timing information.
+    email_ok = hmac.compare_digest(email.strip().lower(), expected_email.strip().lower())
+    password_ok = hmac.compare_digest(password, expected_password)
+    return email_ok and password_ok
+
+
+def require_login():
+    """Block the app behind a simple email/password gate. Call before rendering UI."""
+    if st.session_state.get("authenticated"):
+        # Logged in — offer a logout control in the sidebar.
+        with st.sidebar:
+            if st.button("🔓 Log out", use_container_width=True):
+                st.session_state.authenticated = False
+                st.rerun()
+        return
+
+    # Not logged in — render a centered login card and stop the rest of the app.
+    st.markdown(
+        "<div style='text-align:center; margin-top:2rem;'>"
+        "<h1>🔐 HireGen Outreach Agent</h1>"
+        "<p style='color:#6b7280;'>Please sign in to continue.</p></div>",
+        unsafe_allow_html=True,
+    )
+    _, mid, _ = st.columns([1, 2, 1])
+    with mid:
+        with st.form("login_form"):
+            email = st.text_input("Email", placeholder="you@example.com")
+            password = st.text_input("Password", type="password", placeholder="••••••••")
+            submitted = st.form_submit_button("Log in", type="primary", use_container_width=True)
+        if submitted:
+            if _check_credentials(email, password):
+                st.session_state.authenticated = True
+                st.rerun()
+            else:
+                st.error("❌ Invalid email or password.")
+    st.stop()
+
+
+require_login()
 
 
 @st.cache_resource
