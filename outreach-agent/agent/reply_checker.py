@@ -141,6 +141,10 @@ def check_replies_for_lead(service, lead: dict) -> dict | None:
         }
 
     except Exception as e:
+        # Missing read scope affects every lead — let the caller stop early
+        # instead of logging the same 403 for all of them.
+        if "insufficientPermissions" in str(e) or "insufficient authentication scopes" in str(e):
+            raise
         print(f"[Reply Checker] Error checking {contact_email}: {e}")
         return None
 
@@ -165,7 +169,15 @@ def check_all_replies():
         if lead.get("response_status") in ("positive", "negative", "bounced"):
             continue
 
-        reply = check_replies_for_lead(service, lead)
+        try:
+            reply = check_replies_for_lead(service, lead)
+        except Exception as e:
+            if "insufficientPermissions" in str(e) or "insufficient authentication scopes" in str(e):
+                print("[Reply Checker] ⚠️ Gmail token is missing the read scope "
+                      "(gmail.readonly). Regenerate GMAIL_TOKEN_B64 with the updated "
+                      "scopes to enable reply detection. Skipping reply check.")
+                return updated
+            raise
         if reply:
             supabase.table("leads").update(reply).eq("id", lead["id"]).execute()
             print(f"[Reply Checker] {lead['company_name']} ({lead['contact_email']}): {reply['response_status'].upper()}")
