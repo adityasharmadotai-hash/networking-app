@@ -1,0 +1,40 @@
+name: Email Scheduler (queue drain)
+
+# Free alternative to an always-on Render worker: run scheduler.py --once on a
+# cron. Runs every 20 min during ~US business hours (weekdays). The 8am-6pm PT
+# send window is enforced inside the code, so off-hours runs simply do nothing.
+#
+# NOTE: GitHub's `schedule` trigger only fires from the repo's DEFAULT branch,
+# so this must be merged to `main` for the cron to run. `workflow_dispatch`
+# works from any branch for manual testing.
+
+on:
+  schedule:
+    - cron: "*/20 15-23 * * 1-5"   # 15:00-23:59 UTC  (~8am-4pm PT)
+    - cron: "*/20 0-2 * * 1-5"     # 00:00-02:59 UTC  (~4pm-6pm PT)
+  workflow_dispatch:                # allow manual runs from the Actions tab
+
+jobs:
+  drain-queue:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r outreach-agent/requirements.txt
+
+      - name: Run scheduler (single pass)
+        working-directory: outreach-agent
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GMAIL_TOKEN_B64: ${{ secrets.GMAIL_TOKEN_B64 }}
+          SENDER_EMAIL: susan@hiregen.co
+          DAILY_EMAIL_LIMIT: "20"
+          FOLLOWUP_INTERVAL_DAYS: "3"
+          MAX_FOLLOWUPS: "5"
+        run: python scheduler.py --once

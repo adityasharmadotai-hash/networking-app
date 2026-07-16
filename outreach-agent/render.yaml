@@ -1,0 +1,75 @@
+# Render Blueprint for the HireGen Outreach Agent
+# ------------------------------------------------
+# Deploys scheduler.py as an always-on background worker. This is the process
+# that actually SENDS the emails your Streamlit dashboard queues into the
+# `email_queue` table (polls every 30s, sends 8am-6pm PT, checks replies every 4h).
+#
+# How to use:
+#   1. Push this repo to GitHub.
+#   2. In Render: New + -> Blueprint -> pick this repo (Render auto-detects render.yaml).
+#   3. Fill in the env vars marked `sync: false` (they are secrets, not stored in git).
+#   4. Deploy. The worker runs 24/7 and restarts automatically on failure.
+#
+# Note: Render background workers require a paid instance type (Free tier only
+# covers web services that can sleep). `starter` is the smallest paid option.
+
+services:
+  - type: worker
+    name: hiregen-scheduler
+    runtime: python
+    rootDir: outreach-agent
+    plan: starter
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python scheduler.py"
+    autoDeploy: true
+    envVars:
+      # --- Secrets: set these in the Render dashboard, not in git ---
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      # Base64 of the Gmail OAuth token pickle (same value used on Streamlit).
+      # Generate locally: base64 -w0 gmail_token.json  (Linux) / certutil on Windows.
+      - key: GMAIL_TOKEN_B64
+        sync: false
+      # --- Non-secret configuration ---
+      # Pin Python to a version with prebuilt wheels (3.14 builds pandas from
+      # source and fails). Kept in sync with .python-version.
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: SENDER_EMAIL
+        value: susan@hiregen.co
+      - key: DAILY_EMAIL_LIMIT
+        value: "20"
+      - key: FOLLOWUP_INTERVAL_DAYS
+        value: "3"
+      - key: MAX_FOLLOWUPS
+        value: "5"
+
+# ----------------------------------------------------------------------------
+# OPTIONAL: host the Streamlit dashboard on Render too (instead of Streamlit
+# Cloud). Uncomment the block below and add the extra secrets it needs
+# (SERPAPI_KEY, WIZA_API_KEY, GOOGLE_CSE_API_KEY, GOOGLE_CSE_ID, GOOGLE_SHEET_ID).
+#
+#  - type: web
+#    name: hiregen-dashboard
+#    runtime: python
+#    rootDir: outreach-agent
+#    plan: starter
+#    buildCommand: "pip install -r requirements.txt"
+#    startCommand: "streamlit run dashboard/app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true"
+#    envVars:
+#      - key: PYTHON_VERSION
+#        value: "3.11.9"
+#      - key: SUPABASE_URL
+#        sync: false
+#      - key: SUPABASE_SERVICE_ROLE_KEY
+#        sync: false
+#      - key: GMAIL_TOKEN_B64
+#        sync: false
+#      - key: SERPAPI_KEY
+#        sync: false
+#      - key: WIZA_API_KEY
+#        sync: false
+#      - key: SENDER_EMAIL
+#        value: susan@hiregen.co

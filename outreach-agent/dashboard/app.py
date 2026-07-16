@@ -1,5 +1,6 @@
 import os
 import sys
+import hmac
 import uuid
 import random
 import pickle
@@ -19,26 +20,124 @@ from streamlit_quill import st_quill
 
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"))
 
-# Load from Streamlit secrets (cloud) with .env fallback (local)
+# Must be the FIRST Streamlit command — before any st.secrets access below,
+# otherwise Streamlit raises "set_page_config() must be called as the first
+# Streamlit command" (e.g. on hosts with no secrets.toml, like Render).
+st.set_page_config(page_title="HireGen Outreach Agent", page_icon="🎯", layout="wide")
+
+# Load config: env vars first (Render/Railway), then Streamlit secrets (Cloud).
+def _secrets_toml_exists() -> bool:
+    """Whether a secrets.toml exists. Probing st.secrets without one makes
+    Streamlit render a red 'No secrets files found' banner, so check first."""
+    paths = [
+        os.path.expanduser("~/.streamlit/secrets.toml"),
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                     ".streamlit", "secrets.toml"),
+    ]
+    return any(os.path.exists(p) for p in paths)
+
+
 def _secret(key: str, default: str = "") -> str:
-    try:
-        return st.secrets.get(key, os.getenv(key, default))
-    except Exception:
-        return os.getenv(key, default)
+    val = os.getenv(key)
+    if val:
+        return val
+    if _secrets_toml_exists():
+        try:
+            return st.secrets.get(key, default)
+        except Exception:
+            pass
+    return default
 
 SUPABASE_URL = _secret("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = _secret("SUPABASE_SERVICE_ROLE_KEY")
 DAILY_EMAIL_LIMIT = int(_secret("DAILY_EMAIL_LIMIT", "20"))
 FOLLOWUP_INTERVAL_DAYS = int(_secret("FOLLOWUP_INTERVAL_DAYS", "3"))
 
-st.set_page_config(page_title="HireGen Outreach Agent", page_icon="🎯", layout="wide")
-
 st.markdown("""
 <style>
+/* ---- typography ---- */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+html, body, [class*="css"], button, input, textarea { font-family: 'Inter', sans-serif; }
+#MainMenu, footer { visibility: hidden; }
+
+h1 { font-weight: 800; letter-spacing: -0.02em; }
+h2, h3 { font-weight: 700; letter-spacing: -0.01em; }
+
+/* ---- consistent button shape ---- */
+.stButton > button, .stDownloadButton > button, .stFormSubmitButton > button {
+    border-radius: 10px;
+    font-weight: 600;
+}
+
+/* ---- tabs ---- */
+button[data-baseweb="tab"] { font-weight: 600; }
+
+/* ---- metric cards ---- */
+[data-testid="stMetric"] {
+    background: #f8f7ff;
+    border: 1px solid #ede9fe;
+    border-radius: 12px;
+    padding: 0.7rem 1rem;
+}
+[data-testid="stMetricValue"] { color: #4f46e5; font-weight: 800; }
+
+/* ---- expanders / cards ---- */
+[data-testid="stExpander"] { border-radius: 12px; }
+
+/* ---- wizard step highlight ---- */
 .step-done { border-left:4px solid #198754 !important; background:#e8f5e9 !important; }
 thead tr th { background-color: #f0f2f6 !important; font-weight: 600; }
 </style>
 """, unsafe_allow_html=True)
+
+
+# ── Static login gate ─────────────────────────────────────────────────────────
+# Credentials are read from Streamlit secrets / env vars when present, and fall
+# back to the built-in defaults otherwise. To override securely (recommended for
+# a public repo), set APP_LOGIN_EMAIL and APP_LOGIN_PASSWORD in your secrets.
+def _check_credentials(email: str, password: str) -> bool:
+    expected_email = _secret("APP_LOGIN_EMAIL", "devraj@adityasharma.ai")
+    expected_password = _secret("APP_LOGIN_PASSWORD", "DEV@12#$")
+    # Constant-time comparison to avoid leaking length/timing information.
+    email_ok = hmac.compare_digest(email.strip().lower(), expected_email.strip().lower())
+    password_ok = hmac.compare_digest(password, expected_password)
+    return email_ok and password_ok
+
+
+def require_login():
+    """Block the app behind a simple email/password gate. Call before rendering UI."""
+    if st.session_state.get("authenticated"):
+        # Logged in — offer a logout control in the sidebar.
+        with st.sidebar:
+            if st.button("🔓 Log out", use_container_width=True):
+                st.session_state.authenticated = False
+                st.rerun()
+        return
+
+    # Not logged in — render a centered login card and stop the rest of the app.
+    st.markdown(
+        "<div style='text-align:center; margin-top:3rem; margin-bottom:0.5rem;'>"
+        "<div style='font-size:2.6rem;'>🎯</div>"
+        "<h1 style='margin:0.2rem 0;'>HireGen Outreach Agent</h1>"
+        "<p style='color:#6b7280; font-size:1rem;'>Please sign in to continue.</p></div>",
+        unsafe_allow_html=True,
+    )
+    _, mid, _ = st.columns([1, 2, 1])
+    with mid:
+        with st.form("login_form"):
+            email = st.text_input("Email", placeholder="you@example.com")
+            password = st.text_input("Password", type="password", placeholder="••••••••")
+            submitted = st.form_submit_button("Log in", type="primary", use_container_width=True)
+        if submitted:
+            if _check_credentials(email, password):
+                st.session_state.authenticated = True
+                st.rerun()
+            else:
+                st.error("❌ Invalid email or password.")
+    st.stop()
+
+
+require_login()
 
 
 @st.cache_resource
@@ -103,7 +202,9 @@ for key, default in {
         st.session_state[key] = default
 
 # ── Top-level tabs ─────────────────────────────────────────────────────────────
-tab_wizard, tab_history, tab_layoffs = st.tabs(["🚀 Outreach Wizard", "📋 History", "🏷️ Layoffs"])
+tab_wizard, tab_history, tab_queue = st.tabs(
+    ["🚀 Outreach Wizard", "📋 History", "📬 Email Queue"]
+)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -638,7 +739,7 @@ with tab_wizard:
 
                         total_mins = delay_seconds // 60
                         st.success(f"🗓️ **{len(approved_leads)} emails scheduled!** Over ~{total_mins} mins with random 1–3 min gaps.")
-                        st.info("⚠️ Make sure the **scheduler is running** (`python3 scheduler.py`) — it sends emails even after you close this app.")
+                        st.info("📤 The background worker delivers these automatically (8am–6pm PT) — you can safely close this tab.")
                         st.balloons()
 
             if st.session_state.send_complete:
@@ -650,7 +751,7 @@ with tab_wizard:
                         for item in st.session_state.schedule_preview:
                             st.write(f"🕐 **{item['send_at']}** → {item['name']} @ {item['company']}")
 
-                st.warning("Make sure `python3 scheduler.py` is running in your terminal to deliver the emails.")
+                st.caption("📤 Delivered automatically by the background worker (scheduler) — no further action needed.")
 
                 if st.button("🔁 Start a New Outreach Run", type="primary", use_container_width=True):
                     for key in ["discovered_jobs", "approved_jobs", "dedup_removed", "dedup_kept",
@@ -701,6 +802,7 @@ with tab_wizard:
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_history:
     st.title("📋 Past Campaigns")
+    st.caption("Every outreach run, its sent & pending emails, and reply tracking | susan@hiregen.co")
 
     if st.button("🔄 Refresh", key="refresh_history"):
         st.rerun()
@@ -955,105 +1057,136 @@ with tab_history:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 3 — LAYOFFS
+# TAB — EMAIL QUEUE MANAGER
 # ══════════════════════════════════════════════════════════════════════════════
-with tab_layoffs:
-    st.title("🏷️ Layoff Tracker")
-    st.caption("US companies that have recently laid off staff — refreshed every few hours by the scheduler.")
+with tab_queue:
+    st.title("📬 Email Queue Manager")
+    st.caption("Review unsent emails, remove ones you don't want, see upcoming follow-ups, and send a test.")
 
-    top = st.columns([1, 1, 4])
-    with top[0]:
-        if st.button("🔄 Refresh", key="refresh_layoffs"):
-            st.rerun()
-    with top[1]:
-        if st.button("⚡ Scan now", key="scan_layoffs_now", help="Run a discovery scan immediately"):
-            with st.spinner("Scanning WARN + Layoffs.fyi + News..."):
+    supabase = get_supabase()
+
+    # ── Send a test email ─────────────────────────────────────────────────────
+    with st.expander("✉️ Send a test email", expanded=False):
+        st.caption("Sends a one-off email through the configured Gmail account to verify sending works.")
+        test_to = st.text_input("Recipient", value="devraj@hicounselor.com", key="test_email_to")
+
+        # Runtime diagnostics — shows exactly what this service sees.
+        _tok = os.getenv("GMAIL_TOKEN_B64", "")
+        d1, d2 = st.columns(2)
+        d1.caption(f"GMAIL_TOKEN_B64: {'✅ set, len ' + str(len(_tok)) if _tok else '❌ NOT set'}")
+        d2.caption(f"SENDER_EMAIL: {os.getenv('SENDER_EMAIL', '❌ not set')}")
+
+        if st.button("📨 Send test email", type="primary", key="send_test_btn"):
+            if not test_to.strip():
+                st.warning("Enter a recipient email address first.")
+            else:
+                # Send inline so the REAL exception surfaces (send_email() swallows it).
+                import traceback
                 try:
-                    from agent.layoff_filter import run_layoff_scan
-                    new_hits = run_layoff_scan()
-                    st.success(f"Scan complete — {len(new_hits)} new company(ies) found.")
-                except Exception as scan_err:
-                    st.error(f"Scan failed: {scan_err}")
+                    from agent.email_sender import get_gmail_service, build_email
+                    subject = "HireGen — test email ✅"
+                    body = (
+                        "Hi,\n\nThis is a test email from the HireGen Outreach Agent dashboard.\n"
+                        "If you received this, Gmail sending is configured correctly.\n\n— HireGen"
+                    )
+                    service = get_gmail_service()
+                    message = build_email(test_to.strip(), subject, body)
+                    sent = service.users().messages().send(userId="me", body=message).execute()
+                    st.success(f"✅ Test email sent to {test_to.strip()} (Gmail id: {sent.get('id')}).")
+                except Exception as e:
+                    st.error(f"❌ Send failed: {type(e).__name__}: {e}")
+                    st.caption("Full error detail:")
+                    st.code(traceback.format_exc())
 
+    st.divider()
+
+    # ── Load the queue ────────────────────────────────────────────────────────
     try:
-        supabase = get_supabase()
-        rows = supabase.table("layoffs") \
-            .select("*") \
-            .order("first_seen_at", desc=True) \
-            .limit(2000).execute().data
-
-        if not rows:
-            st.info("No layoffs recorded yet. Run the SQL in supabase/layoffs.sql, then click **Scan now** "
-                    "or wait for the scheduler's next scan.")
-        else:
-            df = pd.DataFrame(rows)
-
-            # ── Summary metrics ───────────────────────────────────────────────
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("🏢 Companies", df["company_normalized"].nunique())
-            m2.metric("🇺🇸 US-based", int(df["is_us"].sum()) if "is_us" in df else 0)
-            total_affected = int(df["employees_affected"].fillna(0).sum()) if "employees_affected" in df else 0
-            m3.metric("👥 Employees affected", f"{total_affected:,}")
-            m4.metric("📰 Sources", df["source"].nunique())
-
-            st.divider()
-
-            # ── Filters ───────────────────────────────────────────────────────
-            f1, f2, f3, f4 = st.columns(4)
-            with f1:
-                us_only = st.checkbox("US-based only", value=True, key="layoff_us_only")
-            with f2:
-                industries = sorted([i for i in df["industry"].dropna().unique() if i]) if "industry" in df else []
-                pick_industry = st.multiselect("Industry", options=industries, key="layoff_industry")
-            with f3:
-                sources = sorted(df["source"].dropna().unique()) if "source" in df else []
-                pick_source = st.multiselect("Source", options=sources, key="layoff_source")
-            with f4:
-                min_affected = st.number_input("Min. employees affected", min_value=0, value=0, step=50,
-                                               key="layoff_min_affected")
-
-            view = df.copy()
-            if us_only and "is_us" in view:
-                view = view[view["is_us"] == True]  # noqa: E712
-            if pick_industry:
-                view = view[view["industry"].isin(pick_industry)]
-            if pick_source:
-                view = view[view["source"].isin(pick_source)]
-            if min_affected:
-                view = view[view["employees_affected"].fillna(0) >= min_affected]
-
-            display_cols = ["company_name", "industry", "employees_affected", "location",
-                            "country", "layoff_date", "source", "source_url", "first_seen_at"]
-            display_cols = [c for c in display_cols if c in view.columns]
-            view = view[display_cols].rename(columns={
-                "company_name":       "Company",
-                "industry":           "Industry",
-                "employees_affected": "Affected",
-                "location":           "Location",
-                "country":            "Country",
-                "layoff_date":        "Layoff Date",
-                "source":             "Source",
-                "source_url":         "Link",
-                "first_seen_at":      "First Seen",
-            })
-
-            st.caption(f"Showing **{len(view)}** of {len(df)} recorded layoffs.")
-            st.dataframe(
-                view,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Link": st.column_config.LinkColumn("Link", display_text="Open"),
-                },
-            )
-
-            st.download_button(
-                "⬇️ Download CSV",
-                data=view.to_csv(index=False).encode("utf-8"),
-                file_name="layoffs.csv",
-                mime="text/csv",
-            )
-
+        queue = supabase.table("email_queue").select("*").order("scheduled_for").execute().data or []
     except Exception as e:
-        st.error(f"Could not load layoffs: {e}")
-        st.info("Make sure you've created the table with supabase/layoffs.sql.")
+        st.error(f"Could not load the email queue: {e}")
+        queue = []
+
+    pending = [q for q in queue if q.get("status") == "pending"]
+    intros = [q for q in pending if q.get("email_type") == "intro"]
+    followups = [q for q in pending if str(q.get("email_type", "")).startswith("followup")]
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("⏳ Unsent (pending)", len(pending))
+    m2.metric("📧 Intros", len(intros))
+    m3.metric("🔁 Follow-ups queued", len(followups))
+
+    st.divider()
+
+    # ── Unsent emails: filter, bulk delete, per-row delete ────────────────────
+    st.subheader("Unsent emails")
+    choice = st.radio("Show", ["All", "Intros only", "Follow-ups only"],
+                      horizontal=True, key="queue_filter")
+    rows = intros if choice == "Intros only" else followups if choice == "Follow-ups only" else pending
+
+    if not rows:
+        st.info("✅ No unsent emails in the queue.")
+    else:
+        head = st.columns([2, 2, 2.5, 1.5, 1])
+        for h, t in zip(head, ["Scheduled (PT)", "Company", "Contact", "Type", "Delete"]):
+            h.markdown(f"**{t}**")
+        st.divider()
+
+        for item in rows:
+            lead = item.get("lead_data", {}) or {}
+            try:
+                sched = datetime.fromisoformat(item["scheduled_for"].replace("Z", "+00:00")) \
+                    .astimezone(PACIFIC).strftime("%b %d, %I:%M %p")
+            except Exception:
+                sched = "—"
+            c1, c2, c3, c4, c5 = st.columns([2, 2, 2.5, 1.5, 1])
+            c1.write(sched)
+            c2.write(lead.get("company_name", "—"))
+            c3.write(lead.get("contact_name") or lead.get("contact_email", "—"))
+            c4.write(str(item.get("email_type", "intro")).replace("_", " ").title())
+            if c5.button("🗑️", key=f"del_queue_{item['id']}", help="Delete this unsent email"):
+                supabase.table("email_queue").delete().eq("id", item["id"]).execute()
+                st.rerun()
+
+        st.divider()
+        if st.button(f"🗑️ Delete all {len(rows)} shown", key="del_all_shown"):
+            for item in rows:
+                supabase.table("email_queue").delete().eq("id", item["id"]).execute()
+            st.success(f"Deleted {len(rows)} unsent email(s).")
+            st.rerun()
+
+    st.divider()
+
+    # ── Upcoming follow-ups (from leads, not yet queued) ──────────────────────
+    st.subheader("🔁 Upcoming follow-ups")
+    st.caption("Leads still due for follow-ups. Stops automatically once they reply (positive/negative) or bounce.")
+    try:
+        today = date.today().isoformat()
+        due = supabase.table("leads").select(
+            "company_name, contact_name, contact_email, followup_count, next_followup_date, status, response_status"
+        ).in_("status", ["emailed", "following_up"]).execute().data or []
+
+        upcoming = [
+            l for l in due
+            if (l.get("followup_count") or 0) < 5
+            and l.get("response_status") not in ("positive", "negative", "bounced")
+            and l.get("next_followup_date")
+        ]
+        upcoming.sort(key=lambda l: l.get("next_followup_date") or "")
+
+        if not upcoming:
+            st.info("No upcoming follow-ups scheduled.")
+        else:
+            rows_fu = []
+            for l in upcoming:
+                next_num = (l.get("followup_count") or 0) + 1
+                rows_fu.append({
+                    "Company": l.get("company_name", "—"),
+                    "Contact": l.get("contact_name") or l.get("contact_email", "—"),
+                    "Next": f"Follow-up #{next_num}",
+                    "Due date": l.get("next_followup_date", "—"),
+                    "Sent so far": l.get("followup_count", 0),
+                })
+            st.dataframe(pd.DataFrame(rows_fu), use_container_width=True, hide_index=True)
+    except Exception as e:
+        st.error(f"Could not load follow-ups: {e}")

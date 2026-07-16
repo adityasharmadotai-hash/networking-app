@@ -81,12 +81,8 @@ BOUNCE_KEYWORDS = [
 
 
 def get_gmail_service():
-    token_path = _get_token_path()
-    with open(token_path, "rb") as f:
-        creds = pickle.load(f)
-    if creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-    return build("gmail", "v1", credentials=creds)
+    from agent.email_sender import load_google_credentials
+    return build("gmail", "v1", credentials=load_google_credentials())
 
 
 def classify_reply(subject: str, snippet: str, sender: str) -> str:

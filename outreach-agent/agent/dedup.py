@@ -55,11 +55,8 @@ def normalize(name: str) -> str:
 def get_existing_clients() -> set[str]:
     """Fetch company names from the Google Sheet using existing Gmail OAuth token."""
     try:
-        token_path = _get_token_path()
-        with open(token_path, "rb") as f:
-            creds = pickle.load(f)
-        if creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+        from agent.email_sender import load_google_credentials
+        creds = load_google_credentials()
 
         client = gspread.authorize(creds)
         sheet = client.open_by_key(GOOGLE_SHEET_ID).sheet1

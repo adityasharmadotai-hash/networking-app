@@ -1,4 +1,5 @@
 import os
+import json
 import base64
 import tempfile
 from email.mime.text import MIMEText
@@ -16,7 +17,6 @@ SENDER_EMAIL = os.getenv("SENDER_EMAIL", "susan@hiregen.co")
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GMAIL_TOKEN_FILE = os.path.join(_BASE_DIR, os.getenv("GMAIL_TOKEN_FILE", "gmail_token.json"))
 GMAIL_CREDENTIALS_FILE = os.path.join(_BASE_DIR, os.getenv("GMAIL_CREDENTIALS_FILE", "gmail_credentials.json"))
-GMAIL_CREDENTIALS_FILE = os.getenv("GMAIL_CREDENTIALS_FILE", "gmail_credentials.json")
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.send",
     "https://www.googleapis.com/auth/spreadsheets.readonly",
@@ -24,38 +24,65 @@ SCOPES = [
 ]
 
 
-def _get_token_path() -> str:
-    """
-    Returns a path to a valid gmail_token pickle file.
-    On Streamlit Cloud, loads the token from st.secrets (GMAIL_TOKEN_B64).
-    Locally, uses the file on disk.
-    """
-    # 1. Plain env var — works on Railway and any cloud server
+def _read_token_bytes() -> bytes | None:
+    """Raw token bytes from GMAIL_TOKEN_B64 (env or Streamlit secrets) or the local file."""
+    # 1. Plain env var — works on Render/Railway and any cloud server
     token_b64 = os.getenv("GMAIL_TOKEN_B64", "")
-    if token_b64:
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pkl")
-        tmp.write(base64.b64decode(token_b64))
-        tmp.flush()
-        tmp.close()
-        return tmp.name
 
-    # 2. Streamlit secrets — works on Streamlit Cloud
-    try:
-        from streamlit.runtime.scriptrunner import get_script_run_ctx
-        if get_script_run_ctx() is not None:
-            import streamlit as st
-            token_b64 = st.secrets.get("GMAIL_TOKEN_B64", "")
-            if token_b64:
-                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pkl")
-                tmp.write(base64.b64decode(token_b64))
-                tmp.flush()
-                tmp.close()
-                return tmp.name
-    except Exception:
-        pass
+    # 2. Streamlit secrets — only if a secrets.toml exists (avoids the error banner)
+    if not token_b64:
+        try:
+            from streamlit.runtime.scriptrunner import get_script_run_ctx
+            if get_script_run_ctx() is not None:
+                secrets_paths = [
+                    os.path.expanduser("~/.streamlit/secrets.toml"),
+                    os.path.join(_BASE_DIR, ".streamlit", "secrets.toml"),
+                ]
+                if any(os.path.exists(p) for p in secrets_paths):
+                    import streamlit as st
+                    token_b64 = st.secrets.get("GMAIL_TOKEN_B64", "")
+        except Exception:
+            pass
+
+    if token_b64:
+        return base64.b64decode(token_b64)
 
     # 3. Fall back to local file (development)
-    return GMAIL_TOKEN_FILE
+    if os.path.exists(GMAIL_TOKEN_FILE):
+        with open(GMAIL_TOKEN_FILE, "rb") as f:
+            return f.read()
+    return None
+
+
+def _creds_from_bytes(data: bytes):
+    """Build Credentials from token bytes. Prefers JSON (portable across
+    google-auth versions); falls back to a legacy pickle for older tokens."""
+    try:
+        info = json.loads(data.decode("utf-8"))
+        return Credentials.from_authorized_user_info(info, SCOPES)
+    except Exception:
+        return pickle.loads(data)
+
+
+def load_google_credentials():
+    """Return valid Google OAuth credentials (refreshing if expired). Shared by
+    Gmail sending, reply checking, and Google Sheets access."""
+    data = _read_token_bytes()
+    creds = _creds_from_bytes(data) if data else None
+
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file(GMAIL_CREDENTIALS_FILE, SCOPES)
+            creds = flow.run_local_server(port=0)
+        # Persist locally as portable JSON (dev convenience; ignored on read-only hosts).
+        try:
+            with open(GMAIL_TOKEN_FILE, "w") as f:
+                f.write(creds.to_json())
+        except Exception:
+            pass
+    return creds
 
 EMAIL_TEMPLATES = {
     "intro": {
@@ -141,23 +168,7 @@ susan@hiregen.co""",
 
 
 def get_gmail_service():
-    creds = None
-    token_path = _get_token_path()
-
-    if os.path.exists(token_path):
-        with open(token_path, "rb") as token:
-            creds = pickle.load(token)
-
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(GMAIL_CREDENTIALS_FILE, SCOPES)
-            creds = flow.run_local_server(port=0)
-        with open(token_path, "wb") as token:
-            pickle.dump(creds, token)
-
-    return build("gmail", "v1", credentials=creds)
+    return build("gmail", "v1", credentials=load_google_credentials())
 
 
 def is_html(body: str) -> bool:

@@ -10,19 +10,26 @@ WIZA_BASE = "https://wiza.co/api"
 
 
 def _get_secret(key: str) -> str:
-    """Read from Streamlit secrets (cloud) or env var (local/Railway)."""
+    """Read from Streamlit secrets (cloud) or env var (local/Railway/Render)."""
     # Always check env var first — most reliable across all environments
     val = os.getenv(key, "")
     if val:
         return val
-    # Then try Streamlit secrets
-    try:
-        import streamlit as st
-        val = st.secrets.get(key, "")
-        if val:
-            return val
-    except Exception:
-        pass
+    # Then try Streamlit secrets — but only if a secrets.toml exists, otherwise
+    # probing st.secrets makes Streamlit render a 'No secrets files found' banner.
+    paths = [
+        os.path.expanduser("~/.streamlit/secrets.toml"),
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                     ".streamlit", "secrets.toml"),
+    ]
+    if any(os.path.exists(p) for p in paths):
+        try:
+            import streamlit as st
+            val = st.secrets.get(key, "")
+            if val:
+                return val
+        except Exception:
+            pass
     return ""
 
 
