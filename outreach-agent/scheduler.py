@@ -231,5 +231,29 @@ def run():
         time.sleep(POLL_INTERVAL)
 
 
+def run_once():
+    """Single pass — for GitHub Actions / cron (free, no always-on worker needed).
+    Sends due queued emails, queues due follow-ups, and checks for replies, then exits.
+    The 8am–6pm PT send window is still enforced by process_queue/schedule_followups."""
+    print(f"[Scheduler] Single run — {datetime.now(PACIFIC).strftime('%Y-%m-%d %I:%M %p PT')}")
+    try:
+        sent = process_queue()
+        queued = schedule_followups()
+        print(f"[Scheduler] ✅ {sent} sent, 📅 {queued} follow-up(s) queued.")
+    except Exception as e:
+        print(f"[Scheduler] Send error: {e}")
+
+    try:
+        from agent.reply_checker import check_all_replies
+        updated = check_all_replies()
+        print(f"[Scheduler] 📬 {updated} lead(s) updated with reply status.")
+    except Exception as e:
+        print(f"[Scheduler] Reply check error: {e}")
+
+
 if __name__ == "__main__":
-    run()
+    import sys
+    if "--once" in sys.argv:
+        run_once()
+    else:
+        run()
