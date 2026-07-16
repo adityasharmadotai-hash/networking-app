@@ -1177,23 +1177,34 @@ with tab_queue:
     with st.expander("✉️ Send a test email", expanded=False):
         st.caption("Sends a one-off email through the configured Gmail account to verify sending works.")
         test_to = st.text_input("Recipient", value="devraj@hicounselor.com", key="test_email_to")
+
+        # Runtime diagnostics — shows exactly what this service sees.
+        _tok = os.getenv("GMAIL_TOKEN_B64", "")
+        d1, d2 = st.columns(2)
+        d1.caption(f"GMAIL_TOKEN_B64: {'✅ set, len ' + str(len(_tok)) if _tok else '❌ NOT set'}")
+        d2.caption(f"SENDER_EMAIL: {os.getenv('SENDER_EMAIL', '❌ not set')}")
+
         if st.button("📨 Send test email", type="primary", key="send_test_btn"):
             if not test_to.strip():
                 st.warning("Enter a recipient email address first.")
             else:
+                # Send inline so the REAL exception surfaces (send_email() swallows it).
+                import traceback
                 try:
+                    from agent.email_sender import get_gmail_service, build_email
                     subject = "HireGen — test email ✅"
                     body = (
                         "Hi,\n\nThis is a test email from the HireGen Outreach Agent dashboard.\n"
                         "If you received this, Gmail sending is configured correctly.\n\n— HireGen"
                     )
-                    msg_id = send_email(test_to.strip(), subject, body)
-                    if msg_id:
-                        st.success(f"✅ Test email sent to {test_to.strip()} (Gmail id: {msg_id}).")
-                    else:
-                        st.error("❌ Gmail returned no message id. Check GMAIL_TOKEN_B64 / SENDER_EMAIL on this service.")
+                    service = get_gmail_service()
+                    message = build_email(test_to.strip(), subject, body)
+                    sent = service.users().messages().send(userId="me", body=message).execute()
+                    st.success(f"✅ Test email sent to {test_to.strip()} (Gmail id: {sent.get('id')}).")
                 except Exception as e:
-                    st.error(f"❌ Failed to send: {e}")
+                    st.error(f"❌ Send failed: {type(e).__name__}: {e}")
+                    with st.expander("🔎 Full error detail"):
+                        st.code(traceback.format_exc())
 
     st.divider()
 
