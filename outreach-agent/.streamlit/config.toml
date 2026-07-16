@@ -1,0 +1,12 @@
+# Consistent theme applied across every Streamlit widget in the dashboard.
+# (Colors here drive buttons, active tabs, progress/info accents, sliders, etc.,
+#  so the whole app shares one palette instead of Streamlit's defaults.)
+[theme]
+primaryColor = "#667eea"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f5f6fb"
+textColor = "#1f2937"
+font = "sans serif"
+
+[browser]
+gatherUsageStats = false

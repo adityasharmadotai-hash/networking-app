@@ -55,6 +55,36 @@ FOLLOWUP_INTERVAL_DAYS = int(_secret("FOLLOWUP_INTERVAL_DAYS", "3"))
 
 st.markdown("""
 <style>
+/* ---- typography ---- */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+html, body, [class*="css"], button, input, textarea { font-family: 'Inter', sans-serif; }
+#MainMenu, footer { visibility: hidden; }
+
+h1 { font-weight: 800; letter-spacing: -0.02em; }
+h2, h3 { font-weight: 700; letter-spacing: -0.01em; }
+
+/* ---- consistent button shape ---- */
+.stButton > button, .stDownloadButton > button, .stFormSubmitButton > button {
+    border-radius: 10px;
+    font-weight: 600;
+}
+
+/* ---- tabs ---- */
+button[data-baseweb="tab"] { font-weight: 600; }
+
+/* ---- metric cards ---- */
+[data-testid="stMetric"] {
+    background: #f8f7ff;
+    border: 1px solid #ede9fe;
+    border-radius: 12px;
+    padding: 0.7rem 1rem;
+}
+[data-testid="stMetricValue"] { color: #4f46e5; font-weight: 800; }
+
+/* ---- expanders / cards ---- */
+[data-testid="stExpander"] { border-radius: 12px; }
+
+/* ---- wizard step highlight ---- */
 .step-done { border-left:4px solid #198754 !important; background:#e8f5e9 !important; }
 thead tr th { background-color: #f0f2f6 !important; font-weight: 600; }
 </style>
@@ -86,9 +116,10 @@ def require_login():
 
     # Not logged in — render a centered login card and stop the rest of the app.
     st.markdown(
-        "<div style='text-align:center; margin-top:2rem;'>"
-        "<h1>🔐 HireGen Outreach Agent</h1>"
-        "<p style='color:#6b7280;'>Please sign in to continue.</p></div>",
+        "<div style='text-align:center; margin-top:3rem; margin-bottom:0.5rem;'>"
+        "<div style='font-size:2.6rem;'>🎯</div>"
+        "<h1 style='margin:0.2rem 0;'>HireGen Outreach Agent</h1>"
+        "<p style='color:#6b7280; font-size:1rem;'>Please sign in to continue.</p></div>",
         unsafe_allow_html=True,
     )
     _, mid, _ = st.columns([1, 2, 1])
@@ -769,6 +800,7 @@ with tab_wizard:
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_history:
     st.title("📋 Past Campaigns")
+    st.caption("Every outreach run, its sent & pending emails, and reply tracking | susan@hiregen.co")
 
     if st.button("🔄 Refresh", key="refresh_history"):
         st.rerun()
@@ -1027,7 +1059,7 @@ with tab_history:
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_layoffs:
     st.title("🏷️ Layoff Tracker")
-    st.caption("US companies that have recently laid off staff — refreshed every few hours by the scheduler.")
+    st.caption("US companies that have recently had layoffs — potential outreach targets.")
 
     top = st.columns([1, 1, 4])
     with top[0]:
