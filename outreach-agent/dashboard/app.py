@@ -20,6 +20,11 @@ from streamlit_quill import st_quill
 
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"))
 
+# Must be the FIRST Streamlit command — before any st.secrets access below,
+# otherwise Streamlit raises "set_page_config() must be called as the first
+# Streamlit command" (e.g. on hosts with no secrets.toml, like Render).
+st.set_page_config(page_title="HireGen Outreach Agent", page_icon="🎯", layout="wide")
+
 # Load from Streamlit secrets (cloud) with .env fallback (local)
 def _secret(key: str, default: str = "") -> str:
     try:
@@ -31,8 +36,6 @@ SUPABASE_URL = _secret("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = _secret("SUPABASE_SERVICE_ROLE_KEY")
 DAILY_EMAIL_LIMIT = int(_secret("DAILY_EMAIL_LIMIT", "20"))
 FOLLOWUP_INTERVAL_DAYS = int(_secret("FOLLOWUP_INTERVAL_DAYS", "3"))
-
-st.set_page_config(page_title="HireGen Outreach Agent", page_icon="🎯", layout="wide")
 
 st.markdown("""
 <style>
