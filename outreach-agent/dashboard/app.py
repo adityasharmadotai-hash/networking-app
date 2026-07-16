@@ -202,8 +202,8 @@ for key, default in {
         st.session_state[key] = default
 
 # ── Top-level tabs ─────────────────────────────────────────────────────────────
-tab_wizard, tab_history, tab_queue, tab_layoffs = st.tabs(
-    ["🚀 Outreach Wizard", "📋 History", "📬 Email Queue", "🏷️ Layoffs"]
+tab_wizard, tab_history, tab_queue = st.tabs(
+    ["🚀 Outreach Wizard", "📋 History", "📬 Email Queue"]
 )
 
 
@@ -1054,114 +1054,6 @@ with tab_history:
         st.error(f"Could not load campaigns: {e}")
         import traceback
         st.code(traceback.format_exc())
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB 3 — LAYOFFS
-# ══════════════════════════════════════════════════════════════════════════════
-with tab_layoffs:
-    st.title("🏷️ Layoff Tracker")
-    st.caption("US companies that have recently had layoffs — potential outreach targets.")
-
-    top = st.columns([1, 1, 4])
-    with top[0]:
-        if st.button("🔄 Refresh", key="refresh_layoffs"):
-            st.rerun()
-    with top[1]:
-        if st.button("⚡ Scan now", key="scan_layoffs_now", help="Run a discovery scan immediately"):
-            with st.spinner("Scanning WARN + Layoffs.fyi + News..."):
-                try:
-                    from agent.layoff_filter import run_layoff_scan
-                    new_hits = run_layoff_scan()
-                    st.success(f"Scan complete — {len(new_hits)} new company(ies) found.")
-                except ImportError:
-                    st.info("🚧 Layoff scanning isn't enabled in this deployment yet "
-                            "(the `agent/layoff_filter.py` module hasn't been added).")
-                except Exception as scan_err:
-                    st.error(f"Scan failed: {scan_err}")
-
-    try:
-        supabase = get_supabase()
-        rows = supabase.table("layoffs") \
-            .select("*") \
-            .order("first_seen_at", desc=True) \
-            .limit(2000).execute().data
-
-        if not rows:
-            st.info("No layoffs recorded yet. Run the SQL in supabase/layoffs.sql, then click **Scan now** "
-                    "or wait for the scheduler's next scan.")
-        else:
-            df = pd.DataFrame(rows)
-
-            # ── Summary metrics ───────────────────────────────────────────────
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("🏢 Companies", df["company_normalized"].nunique())
-            m2.metric("🇺🇸 US-based", int(df["is_us"].sum()) if "is_us" in df else 0)
-            total_affected = int(df["employees_affected"].fillna(0).sum()) if "employees_affected" in df else 0
-            m3.metric("👥 Employees affected", f"{total_affected:,}")
-            m4.metric("📰 Sources", df["source"].nunique())
-
-            st.divider()
-
-            # ── Filters ───────────────────────────────────────────────────────
-            f1, f2, f3, f4 = st.columns(4)
-            with f1:
-                us_only = st.checkbox("US-based only", value=True, key="layoff_us_only")
-            with f2:
-                industries = sorted([i for i in df["industry"].dropna().unique() if i]) if "industry" in df else []
-                pick_industry = st.multiselect("Industry", options=industries, key="layoff_industry")
-            with f3:
-                sources = sorted(df["source"].dropna().unique()) if "source" in df else []
-                pick_source = st.multiselect("Source", options=sources, key="layoff_source")
-            with f4:
-                min_affected = st.number_input("Min. employees affected", min_value=0, value=0, step=50,
-                                               key="layoff_min_affected")
-
-            view = df.copy()
-            if us_only and "is_us" in view:
-                view = view[view["is_us"] == True]  # noqa: E712
-            if pick_industry:
-                view = view[view["industry"].isin(pick_industry)]
-            if pick_source:
-                view = view[view["source"].isin(pick_source)]
-            if min_affected:
-                view = view[view["employees_affected"].fillna(0) >= min_affected]
-
-            display_cols = ["company_name", "industry", "employees_affected", "location",
-                            "country", "layoff_date", "source", "source_url", "first_seen_at"]
-            display_cols = [c for c in display_cols if c in view.columns]
-            view = view[display_cols].rename(columns={
-                "company_name":       "Company",
-                "industry":           "Industry",
-                "employees_affected": "Affected",
-                "location":           "Location",
-                "country":            "Country",
-                "layoff_date":        "Layoff Date",
-                "source":             "Source",
-                "source_url":         "Link",
-                "first_seen_at":      "First Seen",
-            })
-
-            st.caption(f"Showing **{len(view)}** of {len(df)} recorded layoffs.")
-            st.dataframe(
-                view,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Link": st.column_config.LinkColumn("Link", display_text="Open"),
-                },
-            )
-
-            st.download_button(
-                "⬇️ Download CSV",
-                data=view.to_csv(index=False).encode("utf-8"),
-                file_name="layoffs.csv",
-                mime="text/csv",
-            )
-
-    except Exception as e:
-        st.error(f"Could not load layoffs: {e}")
-        st.info("Make sure you've created the table with supabase/layoffs.sql.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
