@@ -202,7 +202,9 @@ for key, default in {
         st.session_state[key] = default
 
 # ── Top-level tabs ─────────────────────────────────────────────────────────────
-tab_wizard, tab_history, tab_layoffs = st.tabs(["🚀 Outreach Wizard", "📋 History", "🏷️ Layoffs"])
+tab_wizard, tab_history, tab_queue, tab_layoffs = st.tabs(
+    ["🚀 Outreach Wizard", "📋 History", "📬 Email Queue", "🏷️ Layoffs"]
+)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1160,3 +1162,128 @@ with tab_layoffs:
     except Exception as e:
         st.error(f"Could not load layoffs: {e}")
         st.info("Make sure you've created the table with supabase/layoffs.sql.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB — EMAIL QUEUE MANAGER
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_queue:
+    st.title("📬 Email Queue Manager")
+    st.caption("Review unsent emails, remove ones you don't want, see upcoming follow-ups, and send a test.")
+
+    supabase = get_supabase()
+
+    # ── Send a test email ─────────────────────────────────────────────────────
+    with st.expander("✉️ Send a test email", expanded=False):
+        st.caption("Sends a one-off email through the configured Gmail account to verify sending works.")
+        test_to = st.text_input("Recipient", value="devraj@hicounselor.com", key="test_email_to")
+        if st.button("📨 Send test email", type="primary", key="send_test_btn"):
+            if not test_to.strip():
+                st.warning("Enter a recipient email address first.")
+            else:
+                try:
+                    subject = "HireGen — test email ✅"
+                    body = (
+                        "Hi,\n\nThis is a test email from the HireGen Outreach Agent dashboard.\n"
+                        "If you received this, Gmail sending is configured correctly.\n\n— HireGen"
+                    )
+                    msg_id = send_email(test_to.strip(), subject, body)
+                    if msg_id:
+                        st.success(f"✅ Test email sent to {test_to.strip()} (Gmail id: {msg_id}).")
+                    else:
+                        st.error("❌ Gmail returned no message id. Check GMAIL_TOKEN_B64 / SENDER_EMAIL on this service.")
+                except Exception as e:
+                    st.error(f"❌ Failed to send: {e}")
+
+    st.divider()
+
+    # ── Load the queue ────────────────────────────────────────────────────────
+    try:
+        queue = supabase.table("email_queue").select("*").order("scheduled_for").execute().data or []
+    except Exception as e:
+        st.error(f"Could not load the email queue: {e}")
+        queue = []
+
+    pending = [q for q in queue if q.get("status") == "pending"]
+    intros = [q for q in pending if q.get("email_type") == "intro"]
+    followups = [q for q in pending if str(q.get("email_type", "")).startswith("followup")]
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("⏳ Unsent (pending)", len(pending))
+    m2.metric("📧 Intros", len(intros))
+    m3.metric("🔁 Follow-ups queued", len(followups))
+
+    st.divider()
+
+    # ── Unsent emails: filter, bulk delete, per-row delete ────────────────────
+    st.subheader("Unsent emails")
+    choice = st.radio("Show", ["All", "Intros only", "Follow-ups only"],
+                      horizontal=True, key="queue_filter")
+    rows = intros if choice == "Intros only" else followups if choice == "Follow-ups only" else pending
+
+    if not rows:
+        st.info("✅ No unsent emails in the queue.")
+    else:
+        head = st.columns([2, 2, 2.5, 1.5, 1])
+        for h, t in zip(head, ["Scheduled (PT)", "Company", "Contact", "Type", "Delete"]):
+            h.markdown(f"**{t}**")
+        st.divider()
+
+        for item in rows:
+            lead = item.get("lead_data", {}) or {}
+            try:
+                sched = datetime.fromisoformat(item["scheduled_for"].replace("Z", "+00:00")) \
+                    .astimezone(PACIFIC).strftime("%b %d, %I:%M %p")
+            except Exception:
+                sched = "—"
+            c1, c2, c3, c4, c5 = st.columns([2, 2, 2.5, 1.5, 1])
+            c1.write(sched)
+            c2.write(lead.get("company_name", "—"))
+            c3.write(lead.get("contact_name") or lead.get("contact_email", "—"))
+            c4.write(str(item.get("email_type", "intro")).replace("_", " ").title())
+            if c5.button("🗑️", key=f"del_queue_{item['id']}", help="Delete this unsent email"):
+                supabase.table("email_queue").delete().eq("id", item["id"]).execute()
+                st.rerun()
+
+        st.divider()
+        if st.button(f"🗑️ Delete all {len(rows)} shown", key="del_all_shown"):
+            for item in rows:
+                supabase.table("email_queue").delete().eq("id", item["id"]).execute()
+            st.success(f"Deleted {len(rows)} unsent email(s).")
+            st.rerun()
+
+    st.divider()
+
+    # ── Upcoming follow-ups (from leads, not yet queued) ──────────────────────
+    st.subheader("🔁 Upcoming follow-ups")
+    st.caption("Leads still due for follow-ups. Stops automatically once they reply (positive/negative) or bounce.")
+    try:
+        today = date.today().isoformat()
+        due = supabase.table("leads").select(
+            "company_name, contact_name, contact_email, followup_count, next_followup_date, status, response_status"
+        ).in_("status", ["emailed", "following_up"]).execute().data or []
+
+        upcoming = [
+            l for l in due
+            if (l.get("followup_count") or 0) < 5
+            and l.get("response_status") not in ("positive", "negative", "bounced")
+            and l.get("next_followup_date")
+        ]
+        upcoming.sort(key=lambda l: l.get("next_followup_date") or "")
+
+        if not upcoming:
+            st.info("No upcoming follow-ups scheduled.")
+        else:
+            rows_fu = []
+            for l in upcoming:
+                next_num = (l.get("followup_count") or 0) + 1
+                rows_fu.append({
+                    "Company": l.get("company_name", "—"),
+                    "Contact": l.get("contact_name") or l.get("contact_email", "—"),
+                    "Next": f"Follow-up #{next_num}",
+                    "Due date": l.get("next_followup_date", "—"),
+                    "Sent so far": l.get("followup_count", 0),
+                })
+            st.dataframe(pd.DataFrame(rows_fu), use_container_width=True, hide_index=True)
+    except Exception as e:
+        st.error(f"Could not load follow-ups: {e}")
