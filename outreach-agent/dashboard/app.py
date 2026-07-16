@@ -4,6 +4,7 @@ import hmac
 import uuid
 import random
 import pickle
+import hashlib
 import pandas as pd
 import streamlit as st
 from datetime import date, timedelta, datetime, timezone
@@ -104,13 +105,39 @@ def _check_credentials(email: str, password: str) -> bool:
     return email_ok and password_ok
 
 
+# Opaque token kept in the URL query string so a refresh doesn't log the user
+# out (Streamlit clears st.session_state on every full page reload). It's an
+# HMAC of the credentials, so it can't be forged without knowing them and
+# reveals nothing about the password.
+_AUTH_PARAM = "s"
+
+
+def _auth_token() -> str:
+    secret = (_secret("APP_LOGIN_EMAIL", "devraj@adityasharma.ai") + ":" +
+              _secret("APP_LOGIN_PASSWORD", "DEV@12#$"))
+    return hmac.new(secret.encode(), b"hg-auth-v1", hashlib.sha256).hexdigest()
+
+
 def require_login():
-    """Block the app behind a simple email/password gate. Call before rendering UI."""
+    """Block the app behind a simple email/password gate. Call before rendering UI.
+    Login persists across page refreshes via a signed token in the URL query
+    params (no browser component, so it can't interfere with long operations)."""
+    token = _auth_token()
+
+    # Restore the session from the URL token after a refresh.
+    if not st.session_state.get("authenticated"):
+        if st.query_params.get(_AUTH_PARAM) == token:
+            st.session_state.authenticated = True
+
     if st.session_state.get("authenticated"):
         # Logged in — offer a logout control in the sidebar.
         with st.sidebar:
             if st.button("🔓 Log out", use_container_width=True):
                 st.session_state.authenticated = False
+                try:
+                    del st.query_params[_AUTH_PARAM]
+                except Exception:
+                    st.query_params.clear()
                 st.rerun()
         return
 
@@ -131,6 +158,8 @@ def require_login():
         if submitted:
             if _check_credentials(email, password):
                 st.session_state.authenticated = True
+                # Persist across refreshes via a signed URL token.
+                st.query_params[_AUTH_PARAM] = token
                 st.rerun()
             else:
                 st.error("❌ Invalid email or password.")
@@ -213,7 +242,27 @@ tab_wizard, tab_history, tab_queue = st.tabs(
 with tab_wizard:
     st.title("🎯 HireGen Outreach Agent")
     st.caption("Human-in-the-loop outreach workflow | susan@hiregen.co")
+
+    with st.expander("❓ How this works — read me first", expanded=False):
+        st.markdown(
+            """
+            This tool finds companies that are hiring, finds a contact at each, and emails them — with your review at every step.
+
+            **The 4 steps:**
+            1. **🔍 Discover Jobs** — pick roles + locations, then search job boards for companies hiring right now.
+            2. **🧹 Dedup Review** — automatically removes existing clients and anyone contacted in the last 30 days.
+            3. **✉️ Email Template** — edit the intro + follow-up emails and choose how many companies to contact.
+            4. **📇 Contacts & Send** — finds a real contact + email for each company, then schedules the emails.
+
+            Scheduled emails are sent automatically during **8am–6pm PT**. Track everything in the **📋 History** and **📬 Email Queue** tabs.
+            """
+        )
+
     st.divider()
+
+    # Show a success toast queued by the previous action (survives the rerun).
+    if st.session_state.get("_flash"):
+        st.toast(st.session_state.pop("_flash"), icon="✅")
 
     # Progress bar
     steps = ["1. Discover Jobs", "2. Dedup Review", "3. Email Template", "4. Contacts & Send"]
@@ -253,13 +302,14 @@ with tab_wizard:
         if st.session_state.discovered_jobs is None:
             if st.button("🔍 Run Job Discovery Now", type="primary", use_container_width=True,
                          disabled=not selected_roles or not selected_locations):
-                with st.spinner(f"Searching {len(selected_roles) * len(selected_locations)} combinations..."):
+                with st.spinner(f"🔍 Searching job boards across {len(selected_roles) * len(selected_locations)} combinations… this can take up to a minute."):
                     jobs = discover_jobs(roles=selected_roles, locations=selected_locations)
                     st.session_state.discovered_jobs = jobs
                     # Clear all downstream state so Step 4 always reruns fresh
                     st.session_state.approved_after_dedup = None
                     st.session_state.enriched_leads = None
                     st.session_state.final_leads = None
+                st.session_state["_flash"] = f"Found {len(jobs)} companies hiring"
                 st.rerun()
         else:
             jobs = st.session_state.discovered_jobs
@@ -389,6 +439,7 @@ with tab_wizard:
                                   type="primary", use_container_width=True):
                 st.session_state.approved_after_dedup = kept
                 st.session_state.step = 3
+                st.session_state["_flash"] = f"{len(kept)} companies confirmed — set up your emails"
                 st.rerun()
 
     # ── STEP 3: Email Template ────────────────────────────────────────────────
@@ -608,6 +659,8 @@ with tab_wizard:
 
                 status_text.text("✅ Contact lookup complete!")
                 st.session_state.enriched_leads = results
+                _found_ct = len([j for j in results if j.get("contact_email")])
+                st.toast(f"Contact lookup complete — {_found_ct} contact(s) found", icon="✅")
 
             leads = st.session_state.enriched_leads
             found = [l for l in leads if l.get("contact_email")]
@@ -738,6 +791,7 @@ with tab_wizard:
                         st.session_state.current_campaign_id = campaign_id
 
                         total_mins = delay_seconds // 60
+                        st.toast(f"{len(approved_leads)} emails scheduled!", icon="🎉")
                         st.success(f"🗓️ **{len(approved_leads)} emails scheduled!** Over ~{total_mins} mins with random 1–3 min gaps.")
                         st.info("📤 The background worker delivers these automatically (8am–6pm PT) — you can safely close this tab.")
                         st.balloons()
