@@ -7,6 +7,7 @@ import pickle
 import hashlib
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 from datetime import date, timedelta, datetime, timezone
 from zoneinfo import ZoneInfo
 PACIFIC = ZoneInfo("America/Los_Angeles")
@@ -167,6 +168,40 @@ def require_login():
 
 
 require_login()
+
+
+# ── Sidebar: live Pacific Time clock (display-only iframe; ticks every second) ──
+with st.sidebar:
+    components.html(
+        """
+        <div style="font-family:'Inter',system-ui,sans-serif; text-align:center;
+                    background:#ffffff; border:1px solid #ede9fe; border-radius:12px;
+                    padding:0.7rem 0.5rem; margin-bottom:0.3rem;">
+          <div style="font-size:0.68rem; color:#6b7280; font-weight:700;
+                      text-transform:uppercase; letter-spacing:0.06em;">🕐 Pacific Time</div>
+          <div id="ptt" style="font-size:1.5rem; font-weight:800; color:#4f46e5; margin:0.15rem 0;">–</div>
+          <div id="ptw" style="font-size:0.72rem; font-weight:600;">&nbsp;</div>
+        </div>
+        <script>
+          function updClock() {
+            const now = new Date();
+            const opts = {timeZone:'America/Los_Angeles'};
+            const t = now.toLocaleTimeString('en-US', {...opts, hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:true});
+            const d = now.toLocaleDateString('en-US', {...opts, weekday:'short', month:'short', day:'numeric'});
+            let h = parseInt(now.toLocaleString('en-US', {...opts, hour:'numeric', hour12:false})) % 24;
+            const day = now.toLocaleDateString('en-US', {...opts, weekday:'short'});
+            const weekday = !['Sat','Sun'].includes(day);
+            const open = weekday && h >= 8 && h < 18;
+            document.getElementById('ptt').textContent = t;
+            const w = document.getElementById('ptw');
+            w.textContent = d + ' · ' + (open ? '🟢 Sending window' : '🌙 Outside window');
+            w.style.color = open ? '#198754' : '#9ca3af';
+          }
+          updClock(); setInterval(updClock, 1000);
+        </script>
+        """,
+        height=110,
+    )
 
 
 @st.cache_resource
