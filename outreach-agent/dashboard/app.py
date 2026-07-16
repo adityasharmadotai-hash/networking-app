@@ -1203,8 +1203,8 @@ with tab_queue:
                     st.success(f"✅ Test email sent to {test_to.strip()} (Gmail id: {sent.get('id')}).")
                 except Exception as e:
                     st.error(f"❌ Send failed: {type(e).__name__}: {e}")
-                    with st.expander("🔎 Full error detail"):
-                        st.code(traceback.format_exc())
+                    st.caption("Full error detail:")
+                    st.code(traceback.format_exc())
 
     st.divider()
 
