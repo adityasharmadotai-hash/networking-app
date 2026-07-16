@@ -243,6 +243,22 @@ def get_first_name(contact_name: str) -> str | None:
     return parts[0] if parts else None
 
 
+def _next_send_slot(dt_utc):
+    """Earliest datetime >= dt_utc inside the 8am–6pm PT weekday send window, so
+    scheduled times match when emails actually go out (no more 6am 'pending')."""
+    pt = dt_utc.astimezone(PACIFIC)
+    for _ in range(14):  # safety bound (roll at most ~2 weeks forward)
+        if pt.weekday() >= 5:                 # Sat/Sun → next day 8am
+            pt = (pt + timedelta(days=1)).replace(hour=8, minute=0, second=0, microsecond=0)
+        elif pt.hour < 8:                     # before window → 8am same day
+            pt = pt.replace(hour=8, minute=0, second=0, microsecond=0)
+        elif pt.hour >= 18:                   # after window → next day 8am
+            pt = (pt + timedelta(days=1)).replace(hour=8, minute=0, second=0, microsecond=0)
+        else:
+            break
+    return pt.astimezone(timezone.utc)
+
+
 # ── Session state initialisation ──────────────────────────────────────────────
 for key, default in {
     "step": 1,
@@ -787,18 +803,21 @@ with tab_wizard:
                         supabase = get_supabase()
                         now = datetime.now(timezone.utc)
                         now_pt = now.astimezone(PACIFIC)
-                        delay_seconds = 0
                         schedule_preview = []
 
                         # Use user-edited name or fall back to auto-generated
                         campaign_id = str(uuid.uuid4())
                         campaign_name = st.session_state.get("campaign_name_input") or f"Campaign — {now_pt.strftime('%b %d, %Y %I:%M %p PT')}"
 
+                        # First send lands inside the 8am–6pm PT window; each
+                        # subsequent one is 1–3 min later, rolling to the next
+                        # window if it would spill past 6pm.
+                        send_at = _next_send_slot(now)
+                        first_send_at = send_at
                         for i, lead in enumerate(approved_leads):
                             if i > 0:
                                 gap = random.randint(60, 180)
-                                delay_seconds += gap
-                            send_at = now + timedelta(seconds=delay_seconds)
+                                send_at = _next_send_slot(send_at + timedelta(seconds=gap))
 
                             lead_id = save_lead(supabase, lead)
                             lead_with_id = {**lead, "lead_id": lead_id}
@@ -815,7 +834,7 @@ with tab_wizard:
                             schedule_preview.append({
                                 "name": lead.get("contact_name", "—"),
                                 "company": lead["company_name"],
-                                "send_at": send_at.astimezone(PACIFIC).strftime("%I:%M:%S %p PT"),
+                                "send_at": send_at.astimezone(PACIFIC).strftime("%b %d, %I:%M %p PT"),
                             })
 
                         log_activity(supabase, "agent_run",
@@ -825,10 +844,11 @@ with tab_wizard:
                         st.session_state.schedule_preview = schedule_preview
                         st.session_state.current_campaign_id = campaign_id
 
-                        total_mins = delay_seconds // 60
+                        first_pt = first_send_at.astimezone(PACIFIC).strftime("%b %d, %I:%M %p")
+                        last_pt = send_at.astimezone(PACIFIC).strftime("%b %d, %I:%M %p")
                         st.toast(f"{len(approved_leads)} emails scheduled!", icon="🎉")
-                        st.success(f"🗓️ **{len(approved_leads)} emails scheduled!** Over ~{total_mins} mins with random 1–3 min gaps.")
-                        st.info("📤 The background worker delivers these automatically (8am–6pm PT) — you can safely close this tab.")
+                        st.success(f"🗓️ **{len(approved_leads)} emails scheduled!** First at **{first_pt} PT**, last at **{last_pt} PT** (1–3 min gaps, within 8am–6pm PT).")
+                        st.info("📤 The background worker delivers these automatically during the 8am–6pm PT window — you can safely close this tab.")
                         st.balloons()
 
             if st.session_state.send_complete:
