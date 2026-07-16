@@ -47,6 +47,29 @@ base64 -w0 gmail_token.json
 - Dashboard → **History → Emails Pending in Queue**: rows should move from
   *pending* to delivered during the 8am–6pm PT window.
 
+## Hosting the dashboard as a Web Service (optional)
+
+If you also run the Streamlit dashboard on Render (instead of Streamlit Cloud):
+
+- **Type:** Web Service
+- **Root Directory:** `outreach-agent`
+- **Build Command:** `pip install -r requirements.txt`
+- **Start Command:**
+  `streamlit run dashboard/app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true`
+
+Add the dashboard secrets under Environment: `SUPABASE_URL`,
+`SUPABASE_SERVICE_ROLE_KEY`, `GMAIL_TOKEN_B64`, `SERPAPI_KEY`, `WIZA_API_KEY`,
+`APP_LOGIN_EMAIL`, `APP_LOGIN_PASSWORD` (and optionally `GOOGLE_CSE_API_KEY` /
+`GOOGLE_CSE_ID`).
+
+## Python version
+
+Render defaults to the newest Python (3.14), which has **no prebuilt `pandas`
+wheel** and fails trying to compile it from source. This repo pins Python via
+[`.python-version`](.python-version) (`3.11.9`). If you configured the service
+manually, also set a `PYTHON_VERSION=3.11.9` env var to be safe, then
+**Clear build cache & deploy**.
+
 ## Notes
 
 - Render background workers require a **paid** instance type (Free tier does not

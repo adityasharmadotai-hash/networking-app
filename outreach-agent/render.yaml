@@ -33,6 +33,10 @@ services:
       - key: GMAIL_TOKEN_B64
         sync: false
       # --- Non-secret configuration ---
+      # Pin Python to a version with prebuilt wheels (3.14 builds pandas from
+      # source and fails). Kept in sync with .python-version.
+      - key: PYTHON_VERSION
+        value: "3.11.9"
       - key: SENDER_EMAIL
         value: susan@hiregen.co
       - key: DAILY_EMAIL_LIMIT
@@ -53,8 +57,10 @@ services:
 #    rootDir: outreach-agent
 #    plan: starter
 #    buildCommand: "pip install -r requirements.txt"
-#    startCommand: "streamlit run dashboard/app.py --server.port $PORT --server.address 0.0.0.0"
+#    startCommand: "streamlit run dashboard/app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true"
 #    envVars:
+#      - key: PYTHON_VERSION
+#        value: "3.11.9"
 #      - key: SUPABASE_URL
 #        sync: false
 #      - key: SUPABASE_SERVICE_ROLE_KEY
