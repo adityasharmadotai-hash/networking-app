@@ -4,8 +4,10 @@ import hmac
 import uuid
 import random
 import pickle
+import hashlib
 import pandas as pd
 import streamlit as st
+import extra_streamlit_components as stx
 from datetime import date, timedelta, datetime, timezone
 from zoneinfo import ZoneInfo
 PACIFIC = ZoneInfo("America/Los_Angeles")
@@ -104,13 +106,42 @@ def _check_credentials(email: str, password: str) -> bool:
     return email_ok and password_ok
 
 
+# Opaque token stored in the browser cookie so a refresh doesn't log the user
+# out (Streamlit clears st.session_state on every full page reload). It's an
+# HMAC of the credentials, so it can't be forged without knowing them and
+# reveals nothing about the password.
+_AUTH_COOKIE = "hg_auth"
+
+
+def _auth_token() -> str:
+    secret = (_secret("APP_LOGIN_EMAIL", "devraj@adityasharma.ai") + ":" +
+              _secret("APP_LOGIN_PASSWORD", "DEV@12#$"))
+    return hmac.new(secret.encode(), b"hg-auth-v1", hashlib.sha256).hexdigest()
+
+
 def require_login():
-    """Block the app behind a simple email/password gate. Call before rendering UI."""
+    """Block the app behind a simple email/password gate. Call before rendering UI.
+    Login persists across page refreshes via a signed browser cookie."""
+    cookies = stx.CookieManager(key="auth_cookies")
+    token = _auth_token()
+
+    # Restore the session from the cookie after a refresh.
+    if not st.session_state.get("authenticated"):
+        try:
+            if cookies.get(_AUTH_COOKIE) == token:
+                st.session_state.authenticated = True
+        except Exception:
+            pass
+
     if st.session_state.get("authenticated"):
         # Logged in — offer a logout control in the sidebar.
         with st.sidebar:
             if st.button("🔓 Log out", use_container_width=True):
                 st.session_state.authenticated = False
+                try:
+                    cookies.delete(_AUTH_COOKIE)
+                except Exception:
+                    pass
                 st.rerun()
         return
 
@@ -131,6 +162,12 @@ def require_login():
         if submitted:
             if _check_credentials(email, password):
                 st.session_state.authenticated = True
+                # Persist for 7 days so refreshes stay logged in.
+                try:
+                    cookies.set(_AUTH_COOKIE, token,
+                                expires_at=datetime.now(timezone.utc) + timedelta(days=7))
+                except Exception:
+                    pass
                 st.rerun()
             else:
                 st.error("❌ Invalid email or password.")

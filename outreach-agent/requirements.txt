@@ -11,5 +11,6 @@ google-api-python-client==2.116.0
 python-dotenv==1.0.1
 streamlit==1.31.0
 streamlit-quill==0.0.3
+extra-streamlit-components==0.1.71
 pandas==2.2.0
 schedule==1.2.1
