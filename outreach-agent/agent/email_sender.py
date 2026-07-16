@@ -19,6 +19,7 @@ GMAIL_TOKEN_FILE = os.path.join(_BASE_DIR, os.getenv("GMAIL_TOKEN_FILE", "gmail_
 GMAIL_CREDENTIALS_FILE = os.path.join(_BASE_DIR, os.getenv("GMAIL_CREDENTIALS_FILE", "gmail_credentials.json"))
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/gmail.readonly",   # needed to detect replies
     "https://www.googleapis.com/auth/spreadsheets.readonly",
     "https://www.googleapis.com/auth/drive.readonly",
 ]
