@@ -25,12 +25,28 @@ load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file_
 # Streamlit command" (e.g. on hosts with no secrets.toml, like Render).
 st.set_page_config(page_title="HireGen Outreach Agent", page_icon="🎯", layout="wide")
 
-# Load from Streamlit secrets (cloud) with .env fallback (local)
+# Load config: env vars first (Render/Railway), then Streamlit secrets (Cloud).
+def _secrets_toml_exists() -> bool:
+    """Whether a secrets.toml exists. Probing st.secrets without one makes
+    Streamlit render a red 'No secrets files found' banner, so check first."""
+    paths = [
+        os.path.expanduser("~/.streamlit/secrets.toml"),
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                     ".streamlit", "secrets.toml"),
+    ]
+    return any(os.path.exists(p) for p in paths)
+
+
 def _secret(key: str, default: str = "") -> str:
-    try:
-        return st.secrets.get(key, os.getenv(key, default))
-    except Exception:
-        return os.getenv(key, default)
+    val = os.getenv(key)
+    if val:
+        return val
+    if _secrets_toml_exists():
+        try:
+            return st.secrets.get(key, default)
+        except Exception:
+            pass
+    return default
 
 SUPABASE_URL = _secret("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = _secret("SUPABASE_SERVICE_ROLE_KEY")
