@@ -282,8 +282,8 @@ for key, default in {
         st.session_state[key] = default
 
 # ── Top-level tabs ─────────────────────────────────────────────────────────────
-tab_wizard, tab_history, tab_queue = st.tabs(
-    ["🚀 Outreach Wizard", "📋 History", "📬 Email Queue"]
+tab_wizard, tab_history, tab_queue, tab_sent = st.tabs(
+    ["🚀 Outreach Wizard", "📋 History", "📬 Email Queue", "📤 Sent Emails"]
 )
 
 
@@ -1299,3 +1299,77 @@ with tab_queue:
             st.dataframe(pd.DataFrame(rows_fu), use_container_width=True, hide_index=True)
     except Exception as e:
         st.error(f"Could not load follow-ups: {e}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB — SENT EMAILS
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_sent:
+    st.title("📤 Sent Emails")
+    st.caption("Every email delivered by the agent — who it went to, the subject, and the full message.")
+
+    try:
+        supabase = get_supabase()
+        sent_result = supabase.table("emails_sent") \
+            .select("to_email, to_name, subject, body, sent_at, email_type") \
+            .order("sent_at", desc=True) \
+            .limit(300) \
+            .execute()
+        sent_rows = sent_result.data or []
+
+        intros = [r for r in sent_rows if r.get("email_type") == "intro"]
+        followups = [r for r in sent_rows if r.get("email_type") != "intro"]
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("📨 Total sent", len(sent_rows))
+        m2.metric("👋 Intros", len(intros))
+        m3.metric("🔁 Follow-ups", len(followups))
+
+        st.divider()
+
+        f1, f2 = st.columns([1, 2])
+        with f1:
+            sent_type = st.radio("Show", ["All", "Intros only", "Follow-ups only"], key="sent_type_filter")
+        with f2:
+            sent_search = st.text_input("🔎 Search recipient, name, or subject", key="sent_search",
+                                        placeholder="e.g. justin@company.com")
+
+        shown = sent_rows
+        if sent_type == "Intros only":
+            shown = intros
+        elif sent_type == "Follow-ups only":
+            shown = followups
+        if sent_search.strip():
+            q = sent_search.strip().lower()
+            shown = [r for r in shown
+                     if q in (r.get("to_email") or "").lower()
+                     or q in (r.get("to_name") or "").lower()
+                     or q in (r.get("subject") or "").lower()]
+
+        st.caption(f"Showing {len(shown)} email(s)")
+        if not shown:
+            st.info("📭 No sent emails match. Run a campaign from the Outreach Wizard first.")
+
+        for r in shown:
+            try:
+                sent_pt = datetime.fromisoformat(str(r["sent_at"]).replace("Z", "+00:00")) \
+                    .astimezone(PACIFIC).strftime("%b %d, %I:%M %p PT")
+            except Exception:
+                sent_pt = str(r.get("sent_at", "—"))
+            type_badge = "👋 Intro" if r.get("email_type") == "intro" else f"🔁 {r.get('email_type', 'follow-up').replace('_', ' ').title()}"
+
+            with st.expander(f"📧 {sent_pt}  ·  {r.get('to_email', '?')}  —  {r.get('subject', '(no subject)')}"):
+                st.markdown(
+                    f"**To:** {r.get('to_name') or '—'} &lt;{r.get('to_email', '?')}&gt;  \n"
+                    f"**Type:** {type_badge}  \n"
+                    f"**Sent:** {sent_pt}  \n"
+                    f"**Subject:** {r.get('subject', '')}"
+                )
+                st.divider()
+                body = r.get("body") or "(empty body)"
+                if "</" in body or "<br" in body or "<p" in body:
+                    st.markdown(body, unsafe_allow_html=True)
+                else:
+                    st.text(body)
+    except Exception as e:
+        st.error(f"Could not load sent emails: {e}")
