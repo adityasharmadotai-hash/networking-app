@@ -34,7 +34,8 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           GMAIL_TOKEN_B64: ${{ secrets.GMAIL_TOKEN_B64 }}
           SENDER_EMAIL: susan@hiregen.co
-          DAILY_EMAIL_LIMIT: "20"
+          DAILY_EMAIL_LIMIT: "15"   # warm-up cap per day (raise slowly as reputation builds)
+          PER_RUN_LIMIT: "3"        # max per 20-min run — avoids Gmail burst limits
           FOLLOWUP_INTERVAL_DAYS: "3"
           MAX_FOLLOWUPS: "5"
         run: python scheduler.py --once
