@@ -31,6 +31,8 @@ MAX_FOLLOWUPS           = 5
 PACIFIC                 = ZoneInfo("America/Los_Angeles")
 SEND_HOUR_START         = 8             # 8 AM Pacific
 SEND_HOUR_END           = 18            # 6 PM Pacific
+DAILY_EMAIL_LIMIT       = int(os.getenv("DAILY_EMAIL_LIMIT", "20"))  # max sends per PT day
+PER_RUN_LIMIT           = int(os.getenv("PER_RUN_LIMIT", "5"))       # max sends per run (avoid Gmail bursts)
 
 _last_reply_check = 0
 
@@ -64,16 +66,40 @@ def process_queue():
     if not due:
         return 0
 
-    print(f"[Scheduler] {len(due)} email(s) due — sending now...")
+    # Respect a daily cap (per Pacific day) and a per-run cap so we never burst
+    # past Gmail's sending limit. Anything over the cap stays pending for later.
+    start_pt = datetime.now(PACIFIC).replace(hour=0, minute=0, second=0, microsecond=0)
+    start_utc = start_pt.astimezone(timezone.utc).isoformat()
+    sent_today_res = supabase.table("email_queue").select("id", count="exact") \
+        .eq("status", "sent").gte("sent_at", start_utc).execute()
+    already_today = sent_today_res.count or 0
+    daily_remaining = max(0, DAILY_EMAIL_LIMIT - already_today)
+    batch_size = min(len(due), PER_RUN_LIMIT, daily_remaining)
+
+    if batch_size <= 0:
+        print(f"[Scheduler] Daily limit reached ({already_today}/{DAILY_EMAIL_LIMIT}) — "
+              f"holding {len(due)} email(s) for tomorrow.")
+        return 0
+
+    batch = due[:batch_size]
+    print(f"[Scheduler] {len(due)} due; sending {len(batch)} this run "
+          f"(today {already_today}/{DAILY_EMAIL_LIMIT}, per-run cap {PER_RUN_LIMIT})...")
     sent = 0
 
-    for item in due:
+    for item in batch:
         lead       = item["lead_data"]
         email_type = item.get("email_type", "intro")
 
         try:
             subject, body = render_template(email_type, lead)
             gmail_id = send_email(lead["contact_email"], subject, body)
+
+            if not gmail_id:
+                # Send failed (often a Gmail rate/limit error) — stop this run so
+                # we don't hammer the limit; the rest stay pending for next run.
+                print("[Scheduler] ⚠️ A send returned no id (possible Gmail limit) — "
+                      "stopping this run; remaining emails stay pending.")
+                break
 
             if gmail_id:
                 supabase.table("email_queue").update({

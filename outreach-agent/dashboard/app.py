@@ -7,6 +7,7 @@ import pickle
 import hashlib
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 from datetime import date, timedelta, datetime, timezone
 from zoneinfo import ZoneInfo
 PACIFIC = ZoneInfo("America/Los_Angeles")
@@ -169,6 +170,40 @@ def require_login():
 require_login()
 
 
+# ── Sidebar: live Pacific Time clock (display-only iframe; ticks every second) ──
+with st.sidebar:
+    components.html(
+        """
+        <div style="font-family:'Inter',system-ui,sans-serif; text-align:center;
+                    background:#ffffff; border:1px solid #ede9fe; border-radius:12px;
+                    padding:0.7rem 0.5rem; margin-bottom:0.3rem;">
+          <div style="font-size:0.68rem; color:#6b7280; font-weight:700;
+                      text-transform:uppercase; letter-spacing:0.06em;">🕐 Pacific Time</div>
+          <div id="ptt" style="font-size:1.5rem; font-weight:800; color:#4f46e5; margin:0.15rem 0;">–</div>
+          <div id="ptw" style="font-size:0.72rem; font-weight:600;">&nbsp;</div>
+        </div>
+        <script>
+          function updClock() {
+            const now = new Date();
+            const opts = {timeZone:'America/Los_Angeles'};
+            const t = now.toLocaleTimeString('en-US', {...opts, hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:true});
+            const d = now.toLocaleDateString('en-US', {...opts, weekday:'short', month:'short', day:'numeric'});
+            let h = parseInt(now.toLocaleString('en-US', {...opts, hour:'numeric', hour12:false})) % 24;
+            const day = now.toLocaleDateString('en-US', {...opts, weekday:'short'});
+            const weekday = !['Sat','Sun'].includes(day);
+            const open = weekday && h >= 8 && h < 18;
+            document.getElementById('ptt').textContent = t;
+            const w = document.getElementById('ptw');
+            w.textContent = d + ' · ' + (open ? '🟢 Sending window' : '🌙 Outside window');
+            w.style.color = open ? '#198754' : '#9ca3af';
+          }
+          updClock(); setInterval(updClock, 1000);
+        </script>
+        """,
+        height=110,
+    )
+
+
 @st.cache_resource
 def get_supabase():
     return create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
@@ -208,6 +243,22 @@ def get_first_name(contact_name: str) -> str | None:
     return parts[0] if parts else None
 
 
+def _next_send_slot(dt_utc):
+    """Earliest datetime >= dt_utc inside the 8am–6pm PT weekday send window, so
+    scheduled times match when emails actually go out (no more 6am 'pending')."""
+    pt = dt_utc.astimezone(PACIFIC)
+    for _ in range(14):  # safety bound (roll at most ~2 weeks forward)
+        if pt.weekday() >= 5:                 # Sat/Sun → next day 8am
+            pt = (pt + timedelta(days=1)).replace(hour=8, minute=0, second=0, microsecond=0)
+        elif pt.hour < 8:                     # before window → 8am same day
+            pt = pt.replace(hour=8, minute=0, second=0, microsecond=0)
+        elif pt.hour >= 18:                   # after window → next day 8am
+            pt = (pt + timedelta(days=1)).replace(hour=8, minute=0, second=0, microsecond=0)
+        else:
+            break
+    return pt.astimezone(timezone.utc)
+
+
 # ── Session state initialisation ──────────────────────────────────────────────
 for key, default in {
     "step": 1,
@@ -231,8 +282,8 @@ for key, default in {
         st.session_state[key] = default
 
 # ── Top-level tabs ─────────────────────────────────────────────────────────────
-tab_wizard, tab_history, tab_queue = st.tabs(
-    ["🚀 Outreach Wizard", "📋 History", "📬 Email Queue"]
+tab_wizard, tab_history, tab_queue, tab_sent = st.tabs(
+    ["🚀 Outreach Wizard", "📋 History", "📬 Email Queue", "📤 Sent Emails"]
 )
 
 
@@ -752,18 +803,21 @@ with tab_wizard:
                         supabase = get_supabase()
                         now = datetime.now(timezone.utc)
                         now_pt = now.astimezone(PACIFIC)
-                        delay_seconds = 0
                         schedule_preview = []
 
                         # Use user-edited name or fall back to auto-generated
                         campaign_id = str(uuid.uuid4())
                         campaign_name = st.session_state.get("campaign_name_input") or f"Campaign — {now_pt.strftime('%b %d, %Y %I:%M %p PT')}"
 
+                        # First send lands inside the 8am–6pm PT window; each
+                        # subsequent one is 1–3 min later, rolling to the next
+                        # window if it would spill past 6pm.
+                        send_at = _next_send_slot(now)
+                        first_send_at = send_at
                         for i, lead in enumerate(approved_leads):
                             if i > 0:
                                 gap = random.randint(60, 180)
-                                delay_seconds += gap
-                            send_at = now + timedelta(seconds=delay_seconds)
+                                send_at = _next_send_slot(send_at + timedelta(seconds=gap))
 
                             lead_id = save_lead(supabase, lead)
                             lead_with_id = {**lead, "lead_id": lead_id}
@@ -780,7 +834,7 @@ with tab_wizard:
                             schedule_preview.append({
                                 "name": lead.get("contact_name", "—"),
                                 "company": lead["company_name"],
-                                "send_at": send_at.astimezone(PACIFIC).strftime("%I:%M:%S %p PT"),
+                                "send_at": send_at.astimezone(PACIFIC).strftime("%b %d, %I:%M %p PT"),
                             })
 
                         log_activity(supabase, "agent_run",
@@ -790,10 +844,11 @@ with tab_wizard:
                         st.session_state.schedule_preview = schedule_preview
                         st.session_state.current_campaign_id = campaign_id
 
-                        total_mins = delay_seconds // 60
+                        first_pt = first_send_at.astimezone(PACIFIC).strftime("%b %d, %I:%M %p")
+                        last_pt = send_at.astimezone(PACIFIC).strftime("%b %d, %I:%M %p")
                         st.toast(f"{len(approved_leads)} emails scheduled!", icon="🎉")
-                        st.success(f"🗓️ **{len(approved_leads)} emails scheduled!** Over ~{total_mins} mins with random 1–3 min gaps.")
-                        st.info("📤 The background worker delivers these automatically (8am–6pm PT) — you can safely close this tab.")
+                        st.success(f"🗓️ **{len(approved_leads)} emails scheduled!** First at **{first_pt} PT**, last at **{last_pt} PT** (1–3 min gaps, within 8am–6pm PT).")
+                        st.info("📤 The background worker delivers these automatically during the 8am–6pm PT window — you can safely close this tab.")
                         st.balloons()
 
             if st.session_state.send_complete:
@@ -1244,3 +1299,77 @@ with tab_queue:
             st.dataframe(pd.DataFrame(rows_fu), use_container_width=True, hide_index=True)
     except Exception as e:
         st.error(f"Could not load follow-ups: {e}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB — SENT EMAILS
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_sent:
+    st.title("📤 Sent Emails")
+    st.caption("Every email delivered by the agent — who it went to, the subject, and the full message.")
+
+    try:
+        supabase = get_supabase()
+        sent_result = supabase.table("emails_sent") \
+            .select("to_email, to_name, subject, body, sent_at, email_type") \
+            .order("sent_at", desc=True) \
+            .limit(300) \
+            .execute()
+        sent_rows = sent_result.data or []
+
+        intros = [r for r in sent_rows if r.get("email_type") == "intro"]
+        followups = [r for r in sent_rows if r.get("email_type") != "intro"]
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("📨 Total sent", len(sent_rows))
+        m2.metric("👋 Intros", len(intros))
+        m3.metric("🔁 Follow-ups", len(followups))
+
+        st.divider()
+
+        f1, f2 = st.columns([1, 2])
+        with f1:
+            sent_type = st.radio("Show", ["All", "Intros only", "Follow-ups only"], key="sent_type_filter")
+        with f2:
+            sent_search = st.text_input("🔎 Search recipient, name, or subject", key="sent_search",
+                                        placeholder="e.g. justin@company.com")
+
+        shown = sent_rows
+        if sent_type == "Intros only":
+            shown = intros
+        elif sent_type == "Follow-ups only":
+            shown = followups
+        if sent_search.strip():
+            q = sent_search.strip().lower()
+            shown = [r for r in shown
+                     if q in (r.get("to_email") or "").lower()
+                     or q in (r.get("to_name") or "").lower()
+                     or q in (r.get("subject") or "").lower()]
+
+        st.caption(f"Showing {len(shown)} email(s)")
+        if not shown:
+            st.info("📭 No sent emails match. Run a campaign from the Outreach Wizard first.")
+
+        for r in shown:
+            try:
+                sent_pt = datetime.fromisoformat(str(r["sent_at"]).replace("Z", "+00:00")) \
+                    .astimezone(PACIFIC).strftime("%b %d, %I:%M %p PT")
+            except Exception:
+                sent_pt = str(r.get("sent_at", "—"))
+            type_badge = "👋 Intro" if r.get("email_type") == "intro" else f"🔁 {r.get('email_type', 'follow-up').replace('_', ' ').title()}"
+
+            with st.expander(f"📧 {sent_pt}  ·  {r.get('to_email', '?')}  —  {r.get('subject', '(no subject)')}"):
+                st.markdown(
+                    f"**To:** {r.get('to_name') or '—'} &lt;{r.get('to_email', '?')}&gt;  \n"
+                    f"**Type:** {type_badge}  \n"
+                    f"**Sent:** {sent_pt}  \n"
+                    f"**Subject:** {r.get('subject', '')}"
+                )
+                st.divider()
+                body = r.get("body") or "(empty body)"
+                if "</" in body or "<br" in body or "<p" in body:
+                    st.markdown(body, unsafe_allow_html=True)
+                else:
+                    st.text(body)
+    except Exception as e:
+        st.error(f"Could not load sent emails: {e}")
