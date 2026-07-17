@@ -87,83 +87,88 @@ def load_google_credentials():
 
 EMAIL_TEMPLATES = {
     "intro": {
-        "subject": "Quick intro — candidates for your {role} opening",
+        "subject": "{company} — a candidate for your {short_role} opening",
         "body": """Hi {first_name},
 
-I noticed that {company} is hiring for a {role} — great timing!
+I saw that {company} is hiring for a {role} — exciting to see the team growing.
 
-I work with HireGen, and we have a strong candidate who would be a great fit for this role. They're actively looking and have relevant experience that aligns well with what you're hiring for.
+I lead candidate placement at HireGen, and I have someone I genuinely think is worth a look for this role: they're actively interviewing, have directly relevant experience, and could ramp quickly.
 
-Would you be open to a quick 15-minute call to hear more? Happy to work around your schedule.
+Rather than send a résumé out of the blue, would you be open to a quick 15-minute call this week? And if the timing isn't right, no worries at all.
 
 Thanks,
 Susan
-Susan | HireGen
-susan@hiregen.co""",
+Susan · HireGen
+susan@hiregen.co
+
+P.S. If you'd prefer I don't follow up, just reply "no thanks" and I'll close this out.""",
     },
     "followup_1": {
-        "subject": "Re: Quick intro — candidates for your {role} opening",
+        "subject": "Re: {company} — a candidate for your {short_role} opening",
         "body": """Hi {first_name},
 
-Just wanted to follow up on my previous email. We still have a strong candidate who could be a great fit for your {role} role at {company}.
+Following up on my note about the {role} role at {company} — the candidate I mentioned is still available and keen.
 
-Would you have 15 minutes this week for a quick call?
+Would you have 15 minutes this week? Happy to work around your calendar.
 
 Thanks,
 Susan
-Susan | HireGen
+Susan · HireGen
 susan@hiregen.co""",
     },
     "followup_2": {
-        "subject": "Re: Quick intro — candidates for your {role} opening",
+        "subject": "Re: {company} — a candidate for your {short_role} opening",
         "body": """Hi {first_name},
 
-I know you're busy, so I'll keep this short — our candidate is still available and very much interested in a role like the one {company} is hiring for.
+I know things move fast — just flagging that our candidate for your {short_role} role is still interested in {company}.
 
-Happy to send over a brief profile if that would make it easier to evaluate.
+Glad to send a short profile so you can evaluate without a call. Want me to?
 
 Best,
 Susan
-Susan | HireGen
+Susan · HireGen
 susan@hiregen.co""",
     },
     "followup_3": {
-        "subject": "Re: Quick intro — candidates for your {role} opening",
+        "subject": "Re: {company} — a candidate for your {short_role} opening",
         "body": """Hi {first_name},
 
-Still thinking this could be a great fit for both sides. Our candidate has a strong background in exactly what {company} is looking for.
+Still think this could be a strong fit on both sides — our candidate has hands-on experience with exactly what {company} needs for the {short_role} role.
 
-Let me know if you'd like me to send a profile or hop on a quick call.
+Want me to send a profile, or grab 15 minutes?
 
 Thanks,
 Susan
-Susan | HireGen
+Susan · HireGen
 susan@hiregen.co""",
     },
     "followup_4": {
-        "subject": "Re: Quick intro — candidates for your {role} opening",
+        "subject": "Re: {company} — a candidate for your {short_role} opening",
         "body": """Hi {first_name},
 
-Last follow-up on this — I don't want to take up more of your time if the timing isn't right.
+A couple more nudges from me at most — I don't want to crowd your inbox.
 
-If you're still actively hiring for the {role} position and would like to see our candidate's profile, just reply and I'll send it right over.
+If {company} is still hiring for the {role} role and you'd like to see the candidate's profile, just reply and I'll send it right over.
 
 Best,
 Susan
-Susan | HireGen
+Susan · HireGen
 susan@hiregen.co""",
     },
     "followup_5": {
-        "subject": "Re: Quick intro — candidates for your {role} opening",
+        "subject": "Re: {company} — a candidate for your {short_role} opening",
         "body": """Hi {first_name},
 
-I'll leave it here for now — if you ever need strong engineering talent in the future, please don't hesitate to reach out.
+I'll leave it here for now. If {company} is ever looking for strong talent down the road, I'd be glad to help.
 
-Wishing {company} all the best!
+Wishing you and the team all the best!
 
+Best,
 Susan
-Susan | HireGen
-susan@hiregen.co""",
+Susan · HireGen
+susan@hiregen.co
+
+P.S. You won't hear from me again on this one.""",
     },
 }
 
@@ -216,6 +221,21 @@ def get_first_name(contact_name: str) -> str | None:
     return parts[0] if parts else None
 
 
+def _short_role(role: str) -> str:
+    """A clean, short version of the job title for subject lines — trims off
+    everything after the first separator (' - ', '(', ',', '|') and caps length,
+    so 'Sr ML Engineer - Fintech (100% Remote - USA)' -> 'Sr ML Engineer'."""
+    if not role or not role.strip():
+        return "open"
+    r = role.strip()
+    for sep in [" - ", " – ", " — ", " | ", " (", ", "]:
+        idx = r.find(sep)
+        if idx > 0:
+            r = r[:idx]
+    r = r.strip().rstrip(" -–—|(,")
+    return (r[:44].rstrip() + "…") if len(r) > 45 else r
+
+
 def render_template(template_key: str, lead: dict) -> tuple[str, str]:
     """Fill in template placeholders and return (subject, body).
     Always uses real first name — skips sending if name unavailable."""
@@ -226,10 +246,12 @@ def render_template(template_key: str, lead: dict) -> tuple[str, str]:
     if not first_name:
         first_name = "there"  # last resort, dashboard should filter these out
 
+    role = lead.get("job_title_hiring_for") or "software engineering"
     context = {
         "first_name": first_name,
         "company": lead.get("company_name", "your company"),
-        "role": lead.get("job_title_hiring_for", "software engineering"),
+        "role": role,
+        "short_role": _short_role(role),
     }
     subject = template["subject"].format(**context)
     body = template["body"].format(**context)
