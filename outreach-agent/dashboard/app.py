@@ -974,6 +974,10 @@ with tab_history:
                         time_str = sched_dt.strftime("%I:%M %p PT")
                     except Exception:
                         time_str = "—"
+                    try:
+                        subj, body = render_template(item.get("email_type", "intro"), lead)
+                    except Exception:
+                        subj, body = "—", "—"
                     rows.append({
                         "Scheduled For": time_str,
                         "Campaign": campaign,
@@ -981,7 +985,10 @@ with tab_history:
                         "Contact": lead.get("contact_name", "—"),
                         "Email": lead.get("contact_email", "—"),
                         "Type": item.get("email_type", "intro").replace("_", " ").title(),
+                        "Subject": subj,
+                        "Message": body,
                     })
+                st.caption("Tip: click a **Subject** or **Message** cell to read the full text.")
                 st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
                 st.divider()
         except Exception:
@@ -1256,6 +1263,15 @@ with tab_queue:
             if c5.button("🗑️", key=f"del_queue_{item['id']}", help="Delete this unsent email"):
                 supabase.table("email_queue").delete().eq("id", item["id"]).execute()
                 st.rerun()
+            # Review the exact subject + message that will be sent
+            with st.expander(f"✉️ Preview message → {lead.get('contact_email', '—')}"):
+                try:
+                    subj, body = render_template(item.get("email_type", "intro"), lead)
+                    st.markdown(f"**To:** {lead.get('contact_name') or '—'} &lt;{lead.get('contact_email', '—')}&gt;  \n**Subject:** {subj}")
+                    st.divider()
+                    st.text(body)
+                except Exception as e:
+                    st.caption(f"Could not render preview: {e}")
 
         st.divider()
         if st.button(f"🗑️ Delete all {len(rows)} shown", key="del_all_shown"):

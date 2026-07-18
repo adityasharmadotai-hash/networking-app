@@ -1,6 +1,7 @@
 import os
 import json
 import base64
+import hashlib
 import tempfile
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -173,6 +174,64 @@ P.S. You won't hear from me again on this one.""",
 }
 
 
+# Multiple intro variants so a batch of outreach isn't byte-identical — identical
+# templated mail is a bulk/spam signal. Each recipient gets a deterministic pick
+# (based on their email) so previews and the actual send always match.
+INTRO_SUBJECT_VARIANTS = [
+    "{company} — a candidate for your {short_role} opening",
+    "Candidate for {company}'s {short_role} role",
+    "{short_role} at {company} — worth a quick look?",
+    "A strong {short_role} candidate for {company}",
+]
+
+INTRO_BODY_VARIANTS = [
+    """Hi {first_name},
+
+I saw that {company} is hiring for a {role} — exciting to see the team growing.
+
+I lead candidate placement at HireGen, and I have someone I genuinely think is worth a look for this role: they're actively interviewing, have directly relevant experience, and could ramp quickly.
+
+Rather than send a résumé out of the blue, would you be open to a quick 15-minute call this week? And if the timing isn't right, no worries at all.
+
+Thanks,
+Susan
+Susan · HireGen
+susan@hiregen.co
+
+P.S. If you'd prefer I don't follow up, just reply "no thanks" and I'll close this out.""",
+
+    """Hi {first_name},
+
+Saw that {company} has an opening for a {role} — congrats on the growth.
+
+I run placements at HireGen and I'm working with someone who lines up well with this role: strong hands-on background, actively interviewing, and could get up to speed quickly.
+
+Would a quick 15 minutes this week be worth it to see if they're a fit? No pressure at all if the timing's off.
+
+Best,
+Susan
+Susan · HireGen
+susan@hiregen.co
+
+P.S. Not the right time? Just reply "no thanks" and I won't follow up.""",
+
+    """Hi {first_name},
+
+Noticed {company} is hiring a {role}, so I'll keep this short.
+
+At HireGen I place engineers, and I have one candidate in particular who fits this role well — relevant experience, available now, and genuinely interested.
+
+Open to a short call this week, or would a quick profile be easier to start? Whichever works for you.
+
+Thanks,
+Susan
+Susan · HireGen
+susan@hiregen.co
+
+P.S. If you'd rather I not reach out, a quick "no thanks" and I'll close this out.""",
+]
+
+
 def get_gmail_service():
     return build("gmail", "v1", credentials=load_google_credentials())
 
@@ -238,8 +297,9 @@ def _short_role(role: str) -> str:
 
 def render_template(template_key: str, lead: dict) -> tuple[str, str]:
     """Fill in template placeholders and return (subject, body).
-    Always uses real first name — skips sending if name unavailable."""
-    template = EMAIL_TEMPLATES[template_key]
+    Always uses real first name — skips sending if name unavailable.
+    Intro emails rotate through variants (deterministic per recipient) so a
+    batch isn't identical."""
     first_name = get_first_name(lead.get("contact_name", ""))
 
     # Only use real first name — if unavailable, leave blank so caller can decide
@@ -253,8 +313,20 @@ def render_template(template_key: str, lead: dict) -> tuple[str, str]:
         "role": role,
         "short_role": _short_role(role),
     }
-    subject = template["subject"].format(**context)
-    body = template["body"].format(**context)
+
+    if template_key == "intro":
+        # Deterministic per-recipient variant pick (same email -> same variant).
+        seed = int(hashlib.md5(
+            (lead.get("contact_email") or lead.get("company_name") or "x").encode()
+        ).hexdigest(), 16)
+        subject_tmpl = INTRO_SUBJECT_VARIANTS[seed % len(INTRO_SUBJECT_VARIANTS)]
+        body_tmpl = INTRO_BODY_VARIANTS[(seed // 13) % len(INTRO_BODY_VARIANTS)]
+    else:
+        template = EMAIL_TEMPLATES[template_key]
+        subject_tmpl, body_tmpl = template["subject"], template["body"]
+
+    subject = subject_tmpl.format(**context)
+    body = body_tmpl.format(**context)
     return subject, body
 
 
