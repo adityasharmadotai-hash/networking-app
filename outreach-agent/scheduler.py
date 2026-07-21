@@ -273,6 +273,32 @@ def run():
         time.sleep(POLL_INTERVAL)
 
 
+def recent_bounce_count(query="from:mailer-daemon newer_than:1d") -> int:
+    """Count bounce notifications in the last day (safety circuit breaker)."""
+    try:
+        from agent.reply_checker import get_gmail_service
+        svc = get_gmail_service()
+        r = svc.users().messages().list(userId="me", q=query, maxResults=50).execute()
+        return len(r.get("messages", []))
+    except Exception as e:
+        print(f"[Scheduler] Bounce check failed: {e}")
+        return 0
+
+
+def sending_is_paused() -> bool:
+    """Auto-pause sending if too many bounces recently — stops a reputation
+    spiral (what would have caught the original 40-email failure automatically)."""
+    threshold = int(os.getenv("BOUNCE_PAUSE_THRESHOLD", "8"))
+    bounces = recent_bounce_count()
+    if bounces >= threshold:
+        print(f"[Scheduler] 🛑 CIRCUIT BREAKER: {bounces} bounces in the last 24h "
+              f"(>= {threshold}). PAUSING all sends. Investigate before resuming.")
+        return True
+    if bounces:
+        print(f"[Scheduler] Bounce health: {bounces}/{threshold} in last 24h — OK.")
+    return False
+
+
 def notify_pending_approvals():
     """Email the approver if any emails are awaiting approval. Meant to run once
     a day (its own cron), so the approver gets a daily nudge to review the queue."""
@@ -303,12 +329,15 @@ def run_once():
     Sends due queued emails, queues due follow-ups, and checks for replies, then exits.
     The 8am–6pm PT send window is still enforced by process_queue/schedule_followups."""
     print(f"[Scheduler] Single run — {datetime.now(PACIFIC).strftime('%Y-%m-%d %I:%M %p PT')}")
-    try:
-        sent = process_queue()
-        queued = schedule_followups()
-        print(f"[Scheduler] ✅ {sent} sent, 📅 {queued} follow-up(s) queued.")
-    except Exception as e:
-        print(f"[Scheduler] Send error: {e}")
+    if sending_is_paused():
+        print("[Scheduler] Sends paused this run (bounce circuit breaker). Reply check still runs.")
+    else:
+        try:
+            sent = process_queue()
+            queued = schedule_followups()
+            print(f"[Scheduler] ✅ {sent} sent, 📅 {queued} follow-up(s) queued.")
+        except Exception as e:
+            print(f"[Scheduler] Send error: {e}")
 
     try:
         from agent.reply_checker import check_all_replies
