@@ -65,11 +65,17 @@ POSITIVE_KEYWORDS = [
     "available", "when are you", "can we", "reach out", "good fit",
 ]
 
-NEGATIVE_KEYWORDS = [
-    "not interested", "no thank you", "no thanks", "not looking",
+# Explicit opt-outs → permanent suppression (never contact again).
+UNSUBSCRIBE_KEYWORDS = [
     "unsubscribe", "remove me", "stop emailing", "do not contact",
-    "please don't", "not hiring", "not at this time", "no longer",
-    "filled the position", "position has been filled",
+    "opt out", "opt-out", "take me off", "no thanks", "no thank you",
+    "please stop", "don't contact", "do not email",
+]
+
+NEGATIVE_KEYWORDS = [
+    "not interested", "not looking", "not hiring", "not at this time",
+    "no longer", "filled the position", "position has been filled",
+    "please don't",
 ]
 
 BOUNCE_KEYWORDS = [
@@ -91,6 +97,10 @@ def classify_reply(subject: str, snippet: str, sender: str) -> str:
     # Bounced first — mailer-daemon or delivery failure
     if any(kw in text for kw in BOUNCE_KEYWORDS) or "mailer-daemon" in sender.lower():
         return "bounced"
+
+    # Explicit opt-out → permanent suppression
+    if any(kw in text for kw in UNSUBSCRIBE_KEYWORDS):
+        return "unsubscribed"
 
     # Negative
     if any(kw in text for kw in NEGATIVE_KEYWORDS):
@@ -165,8 +175,8 @@ def check_all_replies():
 
     updated = 0
     for lead in leads:
-        # Skip if already marked positive or negative
-        if lead.get("response_status") in ("positive", "negative", "bounced"):
+        # Skip if already resolved (replied, bounced, or opted out)
+        if lead.get("response_status") in ("positive", "negative", "bounced", "unsubscribed"):
             continue
 
         try:
@@ -180,6 +190,10 @@ def check_all_replies():
             raise
         if reply:
             supabase.table("leads").update(reply).eq("id", lead["id"]).execute()
+            # Honor opt-outs permanently — add to the suppression list.
+            if reply.get("response_status") == "unsubscribed":
+                from agent.suppression import record_unsubscribe
+                record_unsubscribe(lead.get("contact_email"), reason="reply")
             print(f"[Reply Checker] {lead['company_name']} ({lead['contact_email']}): {reply['response_status'].upper()}")
             updated += 1
         else:

@@ -1,0 +1,30 @@
+name: Daily approval reminder
+
+# Emails the approver once each weekday morning if any emails are awaiting
+# approval, so they know to open the dashboard's Approvals tab.
+# NOTE: `schedule` only runs from the default branch (main).
+
+on:
+  schedule:
+    - cron: "0 15 * * 1-5"   # 15:00 UTC ≈ 8:00 AM PT (weekdays)
+  workflow_dispatch:
+
+jobs:
+  remind:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -r outreach-agent/requirements.txt
+      - name: Send approval reminder
+        working-directory: outreach-agent
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GMAIL_TOKEN_B64: ${{ secrets.GMAIL_TOKEN_B64 }}
+          SENDER_EMAIL: susan@hiregen.co
+          APPROVER_EMAIL: devrajsolanki33@gmail.com
+        run: python scheduler.py --notify-approvals

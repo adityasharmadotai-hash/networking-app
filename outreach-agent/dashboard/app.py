@@ -282,9 +282,12 @@ for key, default in {
         st.session_state[key] = default
 
 # ── Top-level tabs ─────────────────────────────────────────────────────────────
-tab_wizard, tab_history, tab_queue, tab_sent = st.tabs(
-    ["🚀 Outreach Wizard", "📋 History", "📬 Email Queue", "📤 Sent Emails"]
+tab_wizard, tab_approval, tab_history, tab_queue, tab_sent, tab_analytics = st.tabs(
+    ["🚀 Outreach Wizard", "✅ Approvals", "📋 History", "📬 Email Queue", "📤 Sent Emails", "📊 Analytics"]
 )
+
+# Who receives the daily "batch awaiting approval" email.
+APPROVER_EMAIL = _secret("APPROVER_EMAIL", "devrajsolanki33@gmail.com")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -785,6 +788,13 @@ with tab_wizard:
                     help="Auto-generated from date & time. Edit to give this campaign a custom name.",
                     key="campaign_name_input"
                 )
+                hold_for_approval = st.checkbox(
+                    "🔒 Require my approval before sending",
+                    value=True,
+                    help="Emails wait in the Approvals tab until you approve them. "
+                         f"A reminder is emailed to {APPROVER_EMAIL}.",
+                    key="hold_for_approval",
+                )
 
             col_a, col_b, col_c = st.columns(3)
             with col_a:
@@ -812,6 +822,8 @@ with tab_wizard:
                         # First send lands inside the 8am–6pm PT window; each
                         # subsequent one is 1–3 min later, rolling to the next
                         # window if it would spill past 6pm.
+                        hold = st.session_state.get("hold_for_approval", True)
+                        queue_status = "awaiting_approval" if hold else "pending"
                         send_at = _next_send_slot(now)
                         first_send_at = send_at
                         for i, lead in enumerate(approved_leads):
@@ -826,7 +838,7 @@ with tab_wizard:
                                 "lead_data": lead_with_id,
                                 "email_type": "intro",
                                 "scheduled_for": send_at.isoformat(),
-                                "status": "pending",
+                                "status": queue_status,
                                 "campaign_id": campaign_id,
                                 "campaign_name": campaign_name,
                             }).execute()
@@ -846,9 +858,23 @@ with tab_wizard:
 
                         first_pt = first_send_at.astimezone(PACIFIC).strftime("%b %d, %I:%M %p")
                         last_pt = send_at.astimezone(PACIFIC).strftime("%b %d, %I:%M %p")
-                        st.toast(f"{len(approved_leads)} emails scheduled!", icon="🎉")
-                        st.success(f"🗓️ **{len(approved_leads)} emails scheduled!** First at **{first_pt} PT**, last at **{last_pt} PT** (1–3 min gaps, within 8am–6pm PT).")
-                        st.info("📤 The background worker delivers these automatically during the 8am–6pm PT window — you can safely close this tab.")
+                        st.toast(f"{len(approved_leads)} emails queued!", icon="🎉")
+                        if hold:
+                            # Email the approver so they know a batch is waiting.
+                            try:
+                                send_email(
+                                    APPROVER_EMAIL,
+                                    f"[HireGen] {len(approved_leads)} emails awaiting your approval",
+                                    f"Hi,\n\n{len(approved_leads)} outreach emails are queued and waiting for your approval "
+                                    f"(campaign: {campaign_name}).\n\nOpen the dashboard → Approvals tab to Approve, Reject, "
+                                    f"or leave them for later.\n\nScheduled to send {first_pt}–{last_pt} PT once approved.\n\n— HireGen",
+                                )
+                            except Exception:
+                                pass
+                            st.success(f"🔒 **{len(approved_leads)} emails queued for approval.** Review them in the **✅ Approvals** tab — a reminder was emailed to {APPROVER_EMAIL}.")
+                        else:
+                            st.success(f"🗓️ **{len(approved_leads)} emails scheduled!** First at **{first_pt} PT**, last at **{last_pt} PT** (1–3 min gaps, within 8am–6pm PT).")
+                            st.info("📤 Delivered automatically during the 8am–6pm PT window — you can safely close this tab.")
                         st.balloons()
 
             if st.session_state.send_complete:
@@ -904,6 +930,78 @@ with tab_wizard:
                 st.success("No follow-ups due today.")
         except Exception:
             st.info("No data yet.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB — APPROVALS (human-in-the-loop gate before sending)
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_approval:
+    st.title("✅ Approvals")
+    st.caption("Review emails before they send. Approve to release them, Reject to cancel, "
+               "or leave them for later. Nothing here sends until you approve it.")
+
+    try:
+        supabase = get_supabase()
+        waiting = supabase.table("email_queue").select("*") \
+            .eq("status", "awaiting_approval").order("scheduled_for").execute().data or []
+
+        st.metric("🔒 Awaiting your approval", len(waiting))
+
+        if not waiting:
+            st.success("🎉 Nothing waiting — you're all caught up.")
+        else:
+            # Group by campaign for bulk actions
+            campaigns = {}
+            for w in waiting:
+                campaigns.setdefault(w.get("campaign_name", "—"), []).append(w)
+
+            b1, b2 = st.columns(2)
+            if b1.button(f"✅ Approve ALL {len(waiting)}", type="primary", use_container_width=True):
+                for w in waiting:
+                    supabase.table("email_queue").update({"status": "pending"}).eq("id", w["id"]).execute()
+                st.toast(f"Approved {len(waiting)} — they'll send on schedule.", icon="✅")
+                st.rerun()
+            if b2.button(f"❌ Reject ALL {len(waiting)}", use_container_width=True):
+                for w in waiting:
+                    supabase.table("email_queue").update({"status": "cancelled"}).eq("id", w["id"]).execute()
+                st.toast(f"Rejected {len(waiting)}.", icon="🗑️")
+                st.rerun()
+
+            st.divider()
+
+            for camp, items in campaigns.items():
+                st.subheader(f"📁 {camp}  ·  {len(items)} email(s)")
+                for w in items:
+                    lead = w.get("lead_data", {}) or {}
+                    try:
+                        subj, body = render_template(w.get("email_type", "intro"), lead)
+                    except Exception:
+                        subj, body = "—", "—"
+                    try:
+                        sched = datetime.fromisoformat(w["scheduled_for"].replace("Z", "+00:00")) \
+                            .astimezone(PACIFIC).strftime("%b %d, %I:%M %p PT")
+                    except Exception:
+                        sched = "—"
+
+                    with st.container():
+                        c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
+                        c1.markdown(f"**{lead.get('company_name','—')}** → {lead.get('contact_name') or lead.get('contact_email','—')}  \n"
+                                    f"<span style='color:#6b7280;font-size:0.85rem'>{lead.get('contact_email','')} · sends {sched}</span>",
+                                    unsafe_allow_html=True)
+                        if c2.button("✅ Approve", key=f"appr_{w['id']}", use_container_width=True):
+                            supabase.table("email_queue").update({"status": "pending"}).eq("id", w["id"]).execute()
+                            st.rerun()
+                        if c3.button("❌ Reject", key=f"rej_{w['id']}", use_container_width=True):
+                            supabase.table("email_queue").update({"status": "cancelled"}).eq("id", w["id"]).execute()
+                            st.rerun()
+                        if c4.button("🕒 Later", key=f"later_{w['id']}", use_container_width=True,
+                                     help="Leave it awaiting approval for now"):
+                            st.toast("Left for later.", icon="🕒")
+                        with st.expander(f"✉️ Preview — {subj}"):
+                            st.text(body)
+                    st.divider()
+    except Exception as e:
+        st.error(f"Could not load approvals: {e}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1389,3 +1487,81 @@ with tab_sent:
                     st.text(body)
     except Exception as e:
         st.error(f"Could not load sent emails: {e}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB — ANALYTICS
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_analytics:
+    st.title("📊 Analytics")
+    st.caption("How the outreach is performing — sends, replies, and opt-outs.")
+
+    try:
+        supabase = get_supabase()
+
+        total_sent = supabase.table("emails_sent").select("id", count="exact").execute().count or 0
+        leads_all = supabase.table("leads").select("status, response_status").execute().data or []
+        try:
+            unsub_count = supabase.table("unsubscribes").select("email", count="exact").execute().count or 0
+        except Exception:
+            unsub_count = sum(1 for l in leads_all if l.get("response_status") == "unsubscribed")
+
+        def rc(status):
+            return sum(1 for l in leads_all if l.get("response_status") == status)
+
+        positive = rc("positive")
+        negative = rc("negative")
+        unsub_resp = rc("unsubscribed")
+        other = rc("other")
+        bounced = rc("bounced")
+        replies = positive + negative + unsub_resp + other  # any human reply
+        contacted = sum(1 for l in leads_all if l.get("status") in ("emailed", "following_up")) + \
+                    sum(1 for l in leads_all if l.get("response_status"))
+
+        # ── Top-line numbers ──────────────────────────────────────────────────
+        st.subheader("Overview")
+        a, b, c, d = st.columns(4)
+        a.metric("📤 Emails sent", total_sent)
+        b.metric("💬 Replies received", replies)
+        reply_rate = f"{(replies / total_sent * 100):.0f}%" if total_sent else "—"
+        c.metric("📈 Reply rate", reply_rate)
+        d.metric("🚫 Unsubscribed", unsub_count)
+
+        st.divider()
+
+        # ── Response breakdown ────────────────────────────────────────────────
+        st.subheader("Responses")
+        e1, e2, e3, e4, e5 = st.columns(5)
+        e1.metric("✅ Positive", positive)
+        e2.metric("❌ Negative", negative)
+        e3.metric("🚫 Unsubscribed", unsub_resp)
+        e4.metric("↩️ Bounced", bounced)
+        e5.metric("❔ Other", other)
+
+        if replies:
+            st.bar_chart(
+                pd.DataFrame(
+                    {"count": [positive, negative, unsub_resp, other]},
+                    index=["Positive", "Negative", "Unsubscribed", "Other"],
+                ),
+                use_container_width=True,
+            )
+        else:
+            st.info("No replies recorded yet — they'll appear here as leads respond.")
+
+        st.divider()
+
+        # ── Pipeline ──────────────────────────────────────────────────────────
+        st.subheader("Lead pipeline")
+        p1, p2, p3, p4 = st.columns(4)
+        p1.metric("🆕 New", sum(1 for l in leads_all if l.get("status") == "new"))
+        p2.metric("📧 Emailed", sum(1 for l in leads_all if l.get("status") == "emailed"))
+        p3.metric("🔁 Following up", sum(1 for l in leads_all if l.get("status") == "following_up"))
+        p4.metric("🏁 Total leads", len(leads_all))
+
+        st.caption(
+            "🚫 Unsubscribed contacts are on a permanent suppression list — they are "
+            "never sent an intro or a follow-up again, even in future campaigns."
+        )
+    except Exception as e:
+        st.error(f"Could not load analytics: {e}")
