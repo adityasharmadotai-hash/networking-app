@@ -273,6 +273,31 @@ def run():
         time.sleep(POLL_INTERVAL)
 
 
+def notify_pending_approvals():
+    """Email the approver if any emails are awaiting approval. Meant to run once
+    a day (its own cron), so the approver gets a daily nudge to review the queue."""
+    approver = os.getenv("APPROVER_EMAIL", "devrajsolanki33@gmail.com")
+    supabase = get_supabase()
+    waiting = supabase.table("email_queue").select("id, campaign_name") \
+        .eq("status", "awaiting_approval").execute().data or []
+    if not waiting:
+        print("[Approvals] Nothing awaiting approval — no email sent.")
+        return 0
+
+    campaigns = sorted({w.get("campaign_name", "—") for w in waiting})
+    from agent.email_sender import send_email
+    body = (
+        f"Hi,\n\n{len(waiting)} outreach email(s) are waiting for your approval "
+        f"across {len(campaigns)} campaign(s):\n" +
+        "\n".join(f"  • {c}" for c in campaigns) +
+        "\n\nOpen the HireGen dashboard → Approvals tab to Approve, Reject, or "
+        "leave them for later. Nothing sends until you approve it.\n\n— HireGen"
+    )
+    send_email(approver, f"[HireGen] {len(waiting)} email(s) awaiting your approval", body)
+    print(f"[Approvals] Reminder sent to {approver}: {len(waiting)} awaiting approval.")
+    return len(waiting)
+
+
 def run_once():
     """Single pass — for GitHub Actions / cron (free, no always-on worker needed).
     Sends due queued emails, queues due follow-ups, and checks for replies, then exits.
@@ -295,7 +320,9 @@ def run_once():
 
 if __name__ == "__main__":
     import sys
-    if "--once" in sys.argv:
+    if "--notify-approvals" in sys.argv:
+        notify_pending_approvals()
+    elif "--once" in sys.argv:
         run_once()
     else:
         run()
