@@ -282,8 +282,8 @@ for key, default in {
         st.session_state[key] = default
 
 # ── Top-level tabs ─────────────────────────────────────────────────────────────
-tab_wizard, tab_history, tab_queue, tab_sent = st.tabs(
-    ["🚀 Outreach Wizard", "📋 History", "📬 Email Queue", "📤 Sent Emails"]
+tab_wizard, tab_history, tab_queue, tab_sent, tab_analytics = st.tabs(
+    ["🚀 Outreach Wizard", "📋 History", "📬 Email Queue", "📤 Sent Emails", "📊 Analytics"]
 )
 
 
@@ -1389,3 +1389,81 @@ with tab_sent:
                     st.text(body)
     except Exception as e:
         st.error(f"Could not load sent emails: {e}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB — ANALYTICS
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_analytics:
+    st.title("📊 Analytics")
+    st.caption("How the outreach is performing — sends, replies, and opt-outs.")
+
+    try:
+        supabase = get_supabase()
+
+        total_sent = supabase.table("emails_sent").select("id", count="exact").execute().count or 0
+        leads_all = supabase.table("leads").select("status, response_status").execute().data or []
+        try:
+            unsub_count = supabase.table("unsubscribes").select("email", count="exact").execute().count or 0
+        except Exception:
+            unsub_count = sum(1 for l in leads_all if l.get("response_status") == "unsubscribed")
+
+        def rc(status):
+            return sum(1 for l in leads_all if l.get("response_status") == status)
+
+        positive = rc("positive")
+        negative = rc("negative")
+        unsub_resp = rc("unsubscribed")
+        other = rc("other")
+        bounced = rc("bounced")
+        replies = positive + negative + unsub_resp + other  # any human reply
+        contacted = sum(1 for l in leads_all if l.get("status") in ("emailed", "following_up")) + \
+                    sum(1 for l in leads_all if l.get("response_status"))
+
+        # ── Top-line numbers ──────────────────────────────────────────────────
+        st.subheader("Overview")
+        a, b, c, d = st.columns(4)
+        a.metric("📤 Emails sent", total_sent)
+        b.metric("💬 Replies received", replies)
+        reply_rate = f"{(replies / total_sent * 100):.0f}%" if total_sent else "—"
+        c.metric("📈 Reply rate", reply_rate)
+        d.metric("🚫 Unsubscribed", unsub_count)
+
+        st.divider()
+
+        # ── Response breakdown ────────────────────────────────────────────────
+        st.subheader("Responses")
+        e1, e2, e3, e4, e5 = st.columns(5)
+        e1.metric("✅ Positive", positive)
+        e2.metric("❌ Negative", negative)
+        e3.metric("🚫 Unsubscribed", unsub_resp)
+        e4.metric("↩️ Bounced", bounced)
+        e5.metric("❔ Other", other)
+
+        if replies:
+            st.bar_chart(
+                pd.DataFrame(
+                    {"count": [positive, negative, unsub_resp, other]},
+                    index=["Positive", "Negative", "Unsubscribed", "Other"],
+                ),
+                use_container_width=True,
+            )
+        else:
+            st.info("No replies recorded yet — they'll appear here as leads respond.")
+
+        st.divider()
+
+        # ── Pipeline ──────────────────────────────────────────────────────────
+        st.subheader("Lead pipeline")
+        p1, p2, p3, p4 = st.columns(4)
+        p1.metric("🆕 New", sum(1 for l in leads_all if l.get("status") == "new"))
+        p2.metric("📧 Emailed", sum(1 for l in leads_all if l.get("status") == "emailed"))
+        p3.metric("🔁 Following up", sum(1 for l in leads_all if l.get("status") == "following_up"))
+        p4.metric("🏁 Total leads", len(leads_all))
+
+        st.caption(
+            "🚫 Unsubscribed contacts are on a permanent suppression list — they are "
+            "never sent an intro or a follow-up again, even in future campaigns."
+        )
+    except Exception as e:
+        st.error(f"Could not load analytics: {e}")

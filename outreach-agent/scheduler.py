@@ -86,9 +86,20 @@ def process_queue():
           f"(today {already_today}/{DAILY_EMAIL_LIMIT}, per-run cap {PER_RUN_LIMIT})...")
     sent = 0
 
+    from agent.suppression import get_unsubscribed_emails
+    suppressed = get_unsubscribed_emails()
+
     for item in batch:
         lead       = item["lead_data"]
         email_type = item.get("email_type", "intro")
+
+        # Never send to someone who opted out — cancel the queued email.
+        if (lead.get("contact_email") or "").strip().lower() in suppressed:
+            supabase.table("email_queue").update({
+                "status": "cancelled", "error_message": "recipient unsubscribed",
+            }).eq("id", item["id"]).execute()
+            print(f"[Scheduler] 🚫 Skipped (unsubscribed): {lead.get('contact_email')}")
+            continue
 
         try:
             subject, body = render_template(email_type, lead)
@@ -155,7 +166,8 @@ def schedule_followups():
     """
     Find leads due for a follow-up and queue them.
     Only for leads with no response, or response = 'other'.
-    Skip: positive, negative, bounced.
+    Skip: positive, negative, bounced, unsubscribed, and anyone on the
+    permanent suppression list.
     """
     if not is_send_window():
         return 0
@@ -170,9 +182,13 @@ def schedule_followups():
         .lt("followup_count", MAX_FOLLOWUPS) \
         .execute()
 
+    from agent.suppression import get_unsubscribed_emails
+    suppressed = get_unsubscribed_emails()
+
     due_leads = [
         l for l in result.data
-        if l.get("response_status") not in ("positive", "negative", "bounced")
+        if l.get("response_status") not in ("positive", "negative", "bounced", "unsubscribed")
+        and (l.get("contact_email") or "").strip().lower() not in suppressed
     ]
 
     if not due_leads:
