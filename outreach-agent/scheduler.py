@@ -14,6 +14,7 @@ Run in background: nohup python3 scheduler.py > scheduler.log 2>&1 &
 
 import os
 import time
+import random
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
@@ -89,7 +90,7 @@ def process_queue():
     from agent.suppression import get_unsubscribed_emails
     suppressed = get_unsubscribed_emails()
 
-    for item in batch:
+    for idx, item in enumerate(batch):
         lead       = item["lead_data"]
         email_type = item.get("email_type", "intro")
 
@@ -103,6 +104,10 @@ def process_queue():
 
         try:
             subject, body = render_template(email_type, lead)
+            # Space out sends within a run so a batch doesn't all leave in the
+            # same second (looks human, gentler on deliverability).
+            if idx > 0:
+                time.sleep(random.randint(20, 50))
             gmail_id = send_email(lead["contact_email"], subject, body)
 
             if not gmail_id:
