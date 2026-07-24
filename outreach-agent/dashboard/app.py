@@ -58,37 +58,105 @@ FOLLOWUP_INTERVAL_DAYS = int(_secret("FOLLOWUP_INTERVAL_DAYS", "3"))
 st.markdown("""
 <style>
 /* ---- typography ---- */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
-html, body, [class*="css"], button, input, textarea { font-family: 'Inter', sans-serif; }
-#MainMenu, footer { visibility: hidden; }
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
 
-h1 { font-weight: 800; letter-spacing: -0.02em; }
-h2, h3 { font-weight: 700; letter-spacing: -0.01em; }
-
-/* ---- consistent button shape ---- */
-.stButton > button, .stDownloadButton > button, .stFormSubmitButton > button {
-    border-radius: 10px;
-    font-weight: 600;
+:root{
+  --hg-primary:#6366f1;
+  --hg-grad:linear-gradient(135deg,#667eea 0%,#764ba2 100%);
+  --hg-ink:#1f2937;
+  --hg-muted:#6b7280;
+  --hg-line:#ece9fb;
+  --hg-soft:#f8f7ff;
 }
 
-/* ---- tabs ---- */
-button[data-baseweb="tab"] { font-weight: 600; }
+html, body, [class*="css"], button, input, textarea, select { font-family:'Inter',system-ui,sans-serif; }
+#MainMenu, footer, header[data-testid="stHeader"] { visibility:hidden; height:0; }
+
+/* ---- page rhythm ---- */
+.block-container{ padding-top:1.5rem; padding-bottom:3rem; max-width:1180px; }
+
+/* ---- headings ---- */
+h1{ font-weight:800; letter-spacing:-0.025em; color:var(--hg-ink); }
+h2,h3{ font-weight:700; letter-spacing:-0.015em; color:var(--hg-ink); }
+
+/* ---- gradient hero banner ---- */
+.hg-hero{
+  background:var(--hg-grad); border-radius:18px; padding:1.5rem 1.8rem; margin-bottom:1.3rem;
+  box-shadow:0 12px 30px -12px rgba(102,126,234,.6);
+}
+.hg-hero .t{ color:#fff; font-size:1.85rem; font-weight:800; letter-spacing:-0.025em; line-height:1.1; }
+.hg-hero .s{ color:rgba(255,255,255,.85); font-size:.95rem; font-weight:500; margin-top:.35rem; }
+.hg-hero .chip{
+  display:inline-block; margin-top:.75rem; background:rgba(255,255,255,.2);
+  border:1px solid rgba(255,255,255,.3); padding:.22rem .75rem; border-radius:999px;
+  font-size:.76rem; font-weight:600; color:#fff;
+}
+
+/* ---- stepper ---- */
+.hg-steps{ display:flex; gap:.5rem; margin:.2rem 0 .4rem; }
+.hg-step{
+  flex:1; background:#fff; border:1px solid var(--hg-line); border-radius:12px;
+  padding:.6rem .8rem; display:flex; align-items:center; gap:.55rem; box-shadow:0 1px 2px rgba(16,24,40,.04);
+}
+.hg-step .num{
+  width:26px; height:26px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+  font-size:.8rem; font-weight:800; background:var(--hg-soft); color:var(--hg-muted); flex-shrink:0;
+}
+.hg-step .lbl{ font-size:.82rem; font-weight:600; color:var(--hg-muted); line-height:1.15; }
+.hg-step.active{ border-color:transparent; background:var(--hg-grad); box-shadow:0 8px 18px -8px rgba(102,126,234,.6); }
+.hg-step.active .num{ background:rgba(255,255,255,.25); color:#fff; }
+.hg-step.active .lbl{ color:#fff; }
+.hg-step.done .num{ background:#10b981; color:#fff; }
+.hg-step.done .lbl{ color:var(--hg-ink); }
+
+/* ---- tabs as a pill row ---- */
+div[data-baseweb="tab-list"]{ gap:.3rem; background:var(--hg-soft); padding:.35rem; border-radius:14px; border:1px solid var(--hg-line); }
+button[data-baseweb="tab"]{ font-weight:600; border-radius:10px; padding:.4rem .85rem; color:var(--hg-muted); }
+button[data-baseweb="tab"][aria-selected="true"]{ background:#fff; color:var(--hg-primary); box-shadow:0 2px 8px -2px rgba(0,0,0,.12); }
+div[data-baseweb="tab-highlight"], div[data-baseweb="tab-border"]{ display:none !important; }
+
+/* ---- buttons ---- */
+.stButton > button, .stDownloadButton > button, .stFormSubmitButton > button{
+  border-radius:11px; font-weight:600; border:1px solid var(--hg-line); transition:all .15s ease;
+}
+.stButton > button:hover, .stDownloadButton > button:hover{ transform:translateY(-1px); box-shadow:0 6px 16px -6px rgba(0,0,0,.22); }
+.stButton > button[kind="primary"], .stFormSubmitButton > button{ background:var(--hg-grad); border:none; color:#fff; }
+.stButton > button[kind="primary"]:hover{ box-shadow:0 8px 20px -6px rgba(102,126,234,.65); }
 
 /* ---- metric cards ---- */
-[data-testid="stMetric"] {
-    background: #f8f7ff;
-    border: 1px solid #ede9fe;
-    border-radius: 12px;
-    padding: 0.7rem 1rem;
+[data-testid="stMetric"]{
+  background:#fff; border:1px solid var(--hg-line); border-radius:14px; padding:1rem 1.1rem;
+  box-shadow:0 1px 3px rgba(16,24,40,.05); position:relative; overflow:hidden;
 }
-[data-testid="stMetricValue"] { color: #4f46e5; font-weight: 800; }
+[data-testid="stMetric"]::before{ content:""; position:absolute; left:0; top:0; bottom:0; width:4px; background:var(--hg-grad); }
+[data-testid="stMetricValue"]{ color:var(--hg-primary); font-weight:800; }
+[data-testid="stMetricLabel"]{ color:var(--hg-muted); font-weight:600; }
 
-/* ---- expanders / cards ---- */
-[data-testid="stExpander"] { border-radius: 12px; }
+/* ---- expanders ---- */
+[data-testid="stExpander"]{ border:1px solid var(--hg-line); border-radius:14px; box-shadow:0 1px 3px rgba(16,24,40,.04); overflow:hidden; }
+[data-testid="stExpander"] summary:hover{ background:var(--hg-soft); }
 
-/* ---- wizard step highlight ---- */
-.step-done { border-left:4px solid #198754 !important; background:#e8f5e9 !important; }
-thead tr th { background-color: #f0f2f6 !important; font-weight: 600; }
+/* ---- inputs ---- */
+.stTextInput input, .stTextArea textarea, .stNumberInput input{ border-radius:10px; }
+.stTextInput input:focus, .stTextArea textarea:focus{ border-color:var(--hg-primary); box-shadow:0 0 0 3px rgba(99,102,241,.15); }
+
+/* ---- alerts ---- */
+div[data-testid="stAlert"]{ border-radius:12px; border-left-width:4px; }
+
+/* ---- sidebar ---- */
+section[data-testid="stSidebar"]{ background:linear-gradient(180deg,#faf9ff 0%,#f3f1fb 100%); border-right:1px solid var(--hg-line); }
+
+/* ---- status badges (use with unsafe_allow_html) ---- */
+.hg-badge{ display:inline-block; padding:.15rem .6rem; border-radius:999px; font-size:.72rem; font-weight:700; }
+.hg-badge.ok{ background:#dcfce7; color:#166534; }
+.hg-badge.warn{ background:#fef3c7; color:#92400e; }
+.hg-badge.bad{ background:#fee2e2; color:#991b1b; }
+.hg-badge.info{ background:#e0e7ff; color:#3730a3; }
+
+/* ---- tables + misc ---- */
+thead tr th{ background:var(--hg-soft) !important; font-weight:700 !important; color:var(--hg-ink) !important; }
+hr{ margin:1rem 0; border-color:var(--hg-line); }
+.step-done{ border-left:4px solid #10b981 !important; background:#ecfdf5 !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -144,10 +212,16 @@ def require_login():
 
     # Not logged in — render a centered login card and stop the rest of the app.
     st.markdown(
-        "<div style='text-align:center; margin-top:3rem; margin-bottom:0.5rem;'>"
-        "<div style='font-size:2.6rem;'>🎯</div>"
-        "<h1 style='margin:0.2rem 0;'>HireGen Outreach Agent</h1>"
-        "<p style='color:#6b7280; font-size:1rem;'>Please sign in to continue.</p></div>",
+        """
+        <div style='text-align:center; margin-top:3.5rem; margin-bottom:1.2rem;'>
+          <div style='width:74px; height:74px; margin:0 auto; border-radius:20px;
+                      display:flex; align-items:center; justify-content:center; font-size:2.3rem;
+                      background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);
+                      box-shadow:0 12px 28px -10px rgba(102,126,234,.7);'>🎯</div>
+          <h1 style='margin:0.9rem 0 0.2rem;'>HireGen Outreach Agent</h1>
+          <p style='color:#6b7280; font-size:1rem; margin:0;'>Sign in to continue.</p>
+        </div>
+        """,
         unsafe_allow_html=True,
     )
     _, mid, _ = st.columns([1, 2, 1])
@@ -294,8 +368,16 @@ APPROVER_EMAIL = _secret("APPROVER_EMAIL", "devrajsolanki33@gmail.com")
 # TAB 1 — OUTREACH WIZARD
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_wizard:
-    st.title("🎯 HireGen Outreach Agent")
-    st.caption("Human-in-the-loop outreach workflow | susan@hiregen.co")
+    st.markdown(
+        """
+        <div class="hg-hero">
+          <div class="t">🎯 HireGen Outreach Agent</div>
+          <div class="s">Human-in-the-loop outreach — discover, review, and send, all in one flow.</div>
+          <span class="chip">✉️ susan@hiregen.co</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     with st.expander("❓ How this works — read me first", expanded=False):
         st.markdown(
@@ -318,16 +400,19 @@ with tab_wizard:
     if st.session_state.get("_flash"):
         st.toast(st.session_state.pop("_flash"), icon="✅")
 
-    # Progress bar
-    steps = ["1. Discover Jobs", "2. Dedup Review", "3. Email Template", "4. Contacts & Send"]
-    cols = st.columns(4)
-    for i, (col, label) in enumerate(zip(cols, steps), start=1):
-        if i < st.session_state.step:
-            col.success(f"✅ {label}")
-        elif i == st.session_state.step:
-            col.info(f"▶️ {label}")
-        else:
-            col.write(f"⬜ {label}")
+    # Visual stepper
+    steps = ["Discover Jobs", "Dedup Review", "Email Template", "Contacts & Send"]
+    cur = st.session_state.step
+    step_html = '<div class="hg-steps">'
+    for i, label in enumerate(steps, start=1):
+        cls = "done" if i < cur else "active" if i == cur else ""
+        num = "✓" if i < cur else str(i)
+        step_html += (
+            f'<div class="hg-step {cls}"><div class="num">{num}</div>'
+            f'<div class="lbl">{label}</div></div>'
+        )
+    step_html += "</div>"
+    st.markdown(step_html, unsafe_allow_html=True)
 
     st.divider()
 
