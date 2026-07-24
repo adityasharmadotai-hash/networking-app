@@ -92,6 +92,12 @@ h2,h3{ font-weight:700; letter-spacing:-0.015em; color:var(--hg-ink); }
   font-size:.76rem; font-weight:600; color:#fff;
 }
 
+/* ---- lighter page header for secondary tabs ---- */
+.hg-phead{ position:relative; padding-left:15px; margin:2px 0 16px; }
+.hg-phead::before{ content:""; position:absolute; left:0; top:4px; bottom:4px; width:5px; border-radius:3px; background:var(--hg-grad); }
+.hg-phead .t{ font-size:1.5rem; font-weight:800; letter-spacing:-0.02em; line-height:1.12; color:var(--hg-ink); }
+.hg-phead .s{ color:var(--hg-muted); font-size:.9rem; font-weight:500; margin-top:3px; }
+
 /* ---- stepper ---- */
 .hg-steps{ display:flex; gap:.5rem; margin:.2rem 0 .4rem; }
 .hg-step{
@@ -159,6 +165,15 @@ hr{ margin:1rem 0; border-color:var(--hg-line); }
 .step-done{ border-left:4px solid #10b981 !important; background:#ecfdf5 !important; }
 </style>
 """, unsafe_allow_html=True)
+
+
+def page_header(title: str, subtitle: str = ""):
+    """A lighter, consistent header for the secondary tabs — gradient accent bar
+    + title + optional subtitle. Keeps the big gradient hero reserved for the
+    wizard so the app has a clear visual hierarchy."""
+    sub = f'<div class="s">{subtitle}</div>' if subtitle else ""
+    st.markdown(f'<div class="hg-phead"><div class="t">{title}</div>{sub}</div>',
+                unsafe_allow_html=True)
 
 
 # ── Static login gate ─────────────────────────────────────────────────────────
@@ -1030,7 +1045,7 @@ with tab_wizard:
 # TAB — APPROVALS (human-in-the-loop gate before sending)
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_approval:
-    st.title("✅ Approvals")
+    page_header("✅ Approvals", "Review, approve, or reject queued outreach before anything sends.")
     st.caption("Review emails before they send. Approve to release them, Reject to cancel, "
                "or leave them for later. Nothing here sends until you approve it.")
 
@@ -1102,7 +1117,7 @@ with tab_approval:
 # TAB 2 — PAST CAMPAIGNS
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_history:
-    st.title("📋 Past Campaigns")
+    page_header("📋 History", "Past campaigns, delivery stats, and what's still in the queue.")
     st.caption("Every outreach run, its sent & pending emails, and reply tracking | susan@hiregen.co")
 
     if st.button("🔄 Refresh", key="refresh_history"):
@@ -1368,7 +1383,7 @@ with tab_history:
 # TAB — EMAIL QUEUE MANAGER
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_queue:
-    st.title("📬 Email Queue Manager")
+    page_header("📬 Email Queue", "What's scheduled, what's pending, and upcoming follow-ups.")
     st.caption("Review unsent emails, remove ones you don't want, see upcoming follow-ups, and send a test.")
 
     supabase = get_supabase()
@@ -1513,7 +1528,7 @@ with tab_queue:
 # TAB — SENT EMAILS
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_sent:
-    st.title("📤 Sent Emails")
+    page_header("📤 Sent Emails", "A record of every intro and follow-up that has gone out.")
     st.caption("Every email delivered by the agent — who it went to, the subject, and the full message.")
 
     try:
@@ -1587,7 +1602,7 @@ with tab_sent:
 # TAB — ANALYTICS
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_analytics:
-    st.title("📊 Analytics")
+    page_header("📊 Analytics", "Response rates and pipeline health across all outreach.")
     st.caption("How the outreach is performing — sends, replies, and opt-outs.")
 
     try:
