@@ -710,7 +710,7 @@ with tab_wizard:
                 )
 
                 # ── Diagnostics: keys, quota, and a live LinkedIn test ──────────
-                with st.expander("🛠 Contact-lookup diagnostics", expanded=True):
+                with st.expander("🛠 Contact-lookup diagnostics (technical — open only if lookups fail)", expanded=False):
                     st.markdown("**1) API keys detected (cloud secrets / env):**")
                     st.write(f"- SerpAPI: `{_mask(os.environ.get('SERPAPI_KEY',''))}`")
                     st.write(f"- Wiza: `{_mask(os.environ.get('WIZA_API_KEY',''))}`")
@@ -752,12 +752,16 @@ with tab_wizard:
                 progress = st.progress(0)
                 status_text = st.empty()
                 log_area = st.expander("🔍 Live lookup log (click to expand)", expanded=True)
+                # A single placeholder we overwrite each time. Calling .markdown()
+                # directly on the expander APPENDS a new element per call, which
+                # re-prints the whole log tail over and over (looks like duplicates).
+                log_placeholder = log_area.empty()
                 log_lines = []
                 results = []
 
                 def add_log(msg):
                     log_lines.append(msg)
-                    log_area.markdown("\n\n".join(log_lines[-30:]))
+                    log_placeholder.markdown("\n\n".join(log_lines[-30:]))
 
                 for i, job in enumerate(companies[:limit]):
                     company = job["company_name"]
@@ -805,7 +809,11 @@ with tab_wizard:
             found = [l for l in leads if l.get("contact_email")]
             not_found = [l for l in leads if not l.get("contact_email")]
 
-            st.success(f"✅ Found contacts for **{len(found)}** companies. ❌ No contact for **{len(not_found)}** (will be skipped).")
+            mc1, mc2, mc3 = st.columns(3)
+            mc1.metric("✅ Contacts found", len(found))
+            mc2.metric("❌ Skipped (no contact)", len(not_found))
+            mc3.metric("📇 Companies searched", len(leads))
+            st.caption("Contacts found are ready to email. Companies with no contact are skipped automatically.")
 
             if not_found:
                 with st.expander(f"❌ {len(not_found)} companies skipped (no contact found)"):
@@ -832,7 +840,8 @@ with tab_wizard:
 
                 with col1:
                     # Default unchecked if no name
-                    send_flags[i] = st.checkbox("", value=has_name, key=f"send_{i}")
+                    send_flags[i] = st.checkbox("Send", value=has_name, key=f"send_{i}",
+                                                label_visibility="collapsed")
                 with col2:
                     st.write(f"**{lead['company_name']}**")
                 with col3:
