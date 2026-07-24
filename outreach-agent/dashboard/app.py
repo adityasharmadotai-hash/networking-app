@@ -70,7 +70,15 @@ st.markdown("""
 }
 
 html, body, [class*="css"], button, input, textarea, select { font-family:'Inter',system-ui,sans-serif; }
-#MainMenu, footer, header[data-testid="stHeader"] { visibility:hidden; height:0; }
+/* Hide only the toolbar clutter (Deploy button, hamburger menu, run status) and
+   the top decoration bar — NOT the whole header. Nuking the header also hid the
+   arrow that re-opens a collapsed sidebar, leaving no way back. */
+#MainMenu, footer { visibility:hidden; height:0; }
+[data-testid="stToolbar"], [data-testid="stDecoration"], [data-testid="stStatusWidget"]{ display:none !important; }
+header[data-testid="stHeader"]{ background:transparent !important; box-shadow:none !important; }
+/* Belt-and-suspenders: force the sidebar expand/collapse controls to stay visible. */
+[data-testid="stSidebarCollapsedControl"], [data-testid="collapsedControl"],
+[data-testid="stSidebarCollapseButton"]{ visibility:visible !important; z-index:999990; }
 
 /* ---- page rhythm ---- */
 .block-container{ padding-top:1.5rem; padding-bottom:3rem; max-width:1180px; }
