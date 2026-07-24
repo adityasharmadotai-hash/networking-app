@@ -1304,8 +1304,8 @@ with tab_queue:
                         "If you received this, Gmail sending is configured correctly.\n\n— HireGen"
                     )
                     service = get_gmail_service()
-                    message = build_email(test_to.strip(), subject, body)
-                    sent = service.users().messages().send(userId="me", body=message).execute()
+                    built = build_email(test_to.strip(), subject, body)
+                    sent = service.users().messages().send(userId="me", body=built["body"]).execute()
                     st.success(f"✅ Test email sent to {test_to.strip()} (Gmail id: {sent.get('id')}).")
                 except Exception as e:
                     st.error(f"❌ Send failed: {type(e).__name__}: {e}")

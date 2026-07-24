@@ -60,15 +60,19 @@ def send_intro_emails(supabase, leads: list[dict], emails_sent_today: int) -> in
         lead_id = save_lead(supabase, lead)
 
         subject, body = render_template("intro", lead)
-        gmail_id = send_email(lead["contact_email"], subject, body)
+        result = send_email(lead["contact_email"], subject, body)
 
-        if gmail_id:
+        if result and result.get("id"):
+            gmail_id = result["id"]
             next_followup = (date.today() + timedelta(days=FOLLOWUP_INTERVAL_DAYS)).isoformat()
             supabase.table("leads").update({
                 "status": "emailed",
                 "followup_count": 0,
                 "next_followup_date": next_followup,
                 "last_contacted_at": "now()",
+                # Store the intro's thread + Message-ID so follow-ups reply into it.
+                "gmail_thread_id": result.get("thread_id"),
+                "rfc_message_id": result.get("rfc_message_id"),
             }).eq("id", lead_id).execute()
 
             supabase.table("emails_sent").insert({
@@ -79,6 +83,8 @@ def send_intro_emails(supabase, leads: list[dict], emails_sent_today: int) -> in
                 "subject": subject,
                 "body": body,
                 "gmail_message_id": gmail_id,
+                "gmail_thread_id": result.get("thread_id"),
+                "rfc_message_id": result.get("rfc_message_id"),
             }).execute()
 
             log_activity(supabase, "email_sent",
@@ -116,9 +122,15 @@ def send_followups(supabase, emails_sent_today: int) -> int:
             continue
 
         subject, body = render_template(template_key, lead)
-        gmail_id = send_email(lead["contact_email"], subject, body)
+        # Thread the follow-up under the intro's conversation.
+        result = send_email(
+            lead["contact_email"], subject, body,
+            in_reply_to=lead.get("rfc_message_id"),
+            thread_id=lead.get("gmail_thread_id"),
+        )
 
-        if gmail_id:
+        if result and result.get("id"):
+            gmail_id = result["id"]
             next_followup = (date.today() + timedelta(days=FOLLOWUP_INTERVAL_DAYS)).isoformat()
             new_status = "following_up" if followup_num < MAX_FOLLOWUPS else "closed"
 
@@ -137,6 +149,8 @@ def send_followups(supabase, emails_sent_today: int) -> int:
                 "subject": subject,
                 "body": body,
                 "gmail_message_id": gmail_id,
+                "gmail_thread_id": result.get("thread_id"),
+                "rfc_message_id": result.get("rfc_message_id"),
             }).execute()
 
             log_activity(supabase, "followup_sent",
