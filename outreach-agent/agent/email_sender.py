@@ -5,6 +5,7 @@ import hashlib
 import tempfile
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.utils import make_msgid
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
@@ -241,11 +242,35 @@ def is_html(body: str) -> bool:
     return bool(body and ("<p>" in body or "<b>" in body or "<a " in body or "<br" in body or "<ul>" in body))
 
 
-def build_email(to_email: str, subject: str, body: str) -> dict:
+def build_email(
+    to_email: str,
+    subject: str,
+    body: str,
+    in_reply_to: str | None = None,
+    thread_id: str | None = None,
+) -> dict:
+    """Build the Gmail API send body.
+
+    Generates our own RFC ``Message-ID`` so the caller knows it without an extra
+    fetch (needed to thread follow-ups). When ``in_reply_to`` (the intro's
+    Message-ID) is supplied, sets ``In-Reply-To``/``References`` so Gmail — and
+    the recipient's mail client — thread the follow-up under the original.
+    ``thread_id`` (Gmail's internal thread id) is attached to the send body so
+    Gmail keeps it in the same conversation on our side too."""
     message = MIMEMultipart("alternative")
     message["to"] = to_email
     message["from"] = SENDER_EMAIL
     message["subject"] = subject
+
+    # Sign each message with a Message-ID on the sender's domain so we can
+    # reference it from later follow-ups.
+    domain = SENDER_EMAIL.split("@")[-1] if "@" in SENDER_EMAIL else None
+    msg_id = make_msgid(domain=domain)
+    message["Message-ID"] = msg_id
+
+    if in_reply_to:
+        message["In-Reply-To"] = in_reply_to
+        message["References"] = in_reply_to
 
     if is_html(body):
         # Send as HTML with a plain text fallback
@@ -257,16 +282,34 @@ def build_email(to_email: str, subject: str, body: str) -> dict:
         message.attach(MIMEText(body, "plain"))
 
     raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-    return {"raw": raw}
+    payload = {"raw": raw}
+    if thread_id:
+        payload["threadId"] = thread_id
+    return {"body": payload, "rfc_message_id": msg_id}
 
 
-def send_email(to_email: str, subject: str, body: str) -> str | None:
-    """Send an email and return the Gmail message ID."""
+def send_email(
+    to_email: str,
+    subject: str,
+    body: str,
+    in_reply_to: str | None = None,
+    thread_id: str | None = None,
+) -> dict | None:
+    """Send an email. Returns a dict with the Gmail message id, the thread id,
+    and the RFC ``Message-ID`` header (store these to thread follow-ups), or
+    ``None`` on failure.
+
+    ``in_reply_to``/``thread_id`` come from the intro send and, when supplied,
+    make this message land in the same conversation as the intro."""
     try:
         service = get_gmail_service()
-        message = build_email(to_email, subject, body)
-        sent = service.users().messages().send(userId="me", body=message).execute()
-        return sent.get("id")
+        built = build_email(to_email, subject, body, in_reply_to, thread_id)
+        sent = service.users().messages().send(userId="me", body=built["body"]).execute()
+        return {
+            "id": sent.get("id"),
+            "thread_id": sent.get("threadId"),
+            "rfc_message_id": built["rfc_message_id"],
+        }
     except Exception as e:
         print(f"[Email] Failed to send to {to_email}: {e}")
         return None

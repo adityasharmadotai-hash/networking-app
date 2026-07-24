@@ -108,14 +108,27 @@ def process_queue():
             # same second (looks human, gentler on deliverability).
             if idx > 0:
                 time.sleep(random.randint(20, 50))
-            gmail_id = send_email(lead["contact_email"], subject, body)
 
-            if not gmail_id:
+            # Thread follow-ups under the original intro so they land in the same
+            # Gmail conversation (both for us and the recipient's mail client).
+            is_followup = email_type.startswith("followup")
+            in_reply_to = lead.get("intro_rfc_message_id") if is_followup else None
+            reply_thread = lead.get("intro_thread_id") if is_followup else None
+            result = send_email(
+                lead["contact_email"], subject, body,
+                in_reply_to=in_reply_to, thread_id=reply_thread,
+            )
+
+            if not result or not result.get("id"):
                 # Send failed (often a Gmail rate/limit error) — stop this run so
                 # we don't hammer the limit; the rest stay pending for next run.
                 print("[Scheduler] ⚠️ A send returned no id (possible Gmail limit) — "
                       "stopping this run; remaining emails stay pending.")
                 break
+
+            gmail_id     = result["id"]
+            gmail_thread = result.get("thread_id")
+            rfc_msgid    = result.get("rfc_message_id")
 
             if gmail_id:
                 supabase.table("email_queue").update({
@@ -133,19 +146,28 @@ def process_queue():
                         "subject": subject,
                         "body": body,
                         "gmail_message_id": gmail_id,
+                        "gmail_thread_id": gmail_thread,
+                        "rfc_message_id": rfc_msgid,
                         "campaign_id": item.get("campaign_id"),
                     }).execute()
 
                     followup_count = lead.get("followup_count", 0)
                     next_followup  = (datetime.now(timezone.utc) + timedelta(days=FOLLOWUP_INTERVAL_DAYS)).date().isoformat()
-                    new_status     = "following_up" if email_type.startswith("followup") else "emailed"
+                    new_status     = "following_up" if is_followup else "emailed"
 
-                    supabase.table("leads").update({
+                    lead_update = {
                         "status": new_status,
                         "last_contacted_at": datetime.now(timezone.utc).isoformat(),
-                        "followup_count": followup_count + (1 if email_type.startswith("followup") else 0),
+                        "followup_count": followup_count + (1 if is_followup else 0),
                         "next_followup_date": next_followup,
-                    }).eq("id", lead["lead_id"]).execute()
+                    }
+                    # Record the intro's thread + Message-ID so later follow-ups
+                    # can reply into the same conversation.
+                    if not is_followup:
+                        lead_update["gmail_thread_id"] = gmail_thread
+                        lead_update["rfc_message_id"]  = rfc_msgid
+
+                    supabase.table("leads").update(lead_update).eq("id", lead["lead_id"]).execute()
 
                 sent += 1
                 print(f"[Scheduler] ✅ [{email_type}] {lead.get('contact_name')} @ {lead.get('company_name')}")
@@ -219,6 +241,10 @@ def schedule_followups():
             "contact_linkedin_url": lead.get("contact_linkedin_url"),
             "job_title_hiring_for": lead.get("job_title_hiring_for"),
             "followup_count":       followup_num - 1,
+            # Carry the intro's thread + Message-ID so the send threads the
+            # follow-up into the original conversation.
+            "intro_thread_id":      lead.get("gmail_thread_id"),
+            "intro_rfc_message_id": lead.get("rfc_message_id"),
         }
 
         supabase.table("email_queue").insert({

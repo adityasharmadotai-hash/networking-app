@@ -13,6 +13,8 @@ CREATE TABLE IF NOT EXISTS leads (
     followup_count INTEGER DEFAULT 0,
     next_followup_date DATE,
     last_contacted_at TIMESTAMPTZ,
+    gmail_thread_id TEXT,                    -- Gmail thread id of the intro (follow-ups reply into it)
+    rfc_message_id TEXT,                     -- RFC822 Message-ID of the intro (used as In-Reply-To)
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -27,7 +29,9 @@ CREATE TABLE IF NOT EXISTS emails_sent (
     subject TEXT,
     body TEXT,
     sent_at TIMESTAMPTZ DEFAULT NOW(),
-    gmail_message_id TEXT
+    gmail_message_id TEXT,
+    gmail_thread_id TEXT,                    -- thread this message landed in
+    rfc_message_id TEXT                      -- this message's own Message-ID header
 );
 
 -- Activity log for dashboard
