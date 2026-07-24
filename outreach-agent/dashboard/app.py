@@ -70,7 +70,15 @@ st.markdown("""
 }
 
 html, body, [class*="css"], button, input, textarea, select { font-family:'Inter',system-ui,sans-serif; }
-#MainMenu, footer, header[data-testid="stHeader"] { visibility:hidden; height:0; }
+/* Hide only the toolbar clutter (Deploy button, hamburger menu, run status) and
+   the top decoration bar — NOT the whole header. Nuking the header also hid the
+   arrow that re-opens a collapsed sidebar, leaving no way back. */
+#MainMenu, footer { visibility:hidden; height:0; }
+[data-testid="stToolbar"], [data-testid="stDecoration"], [data-testid="stStatusWidget"]{ display:none !important; }
+header[data-testid="stHeader"]{ background:transparent !important; box-shadow:none !important; }
+/* Belt-and-suspenders: force the sidebar expand/collapse controls to stay visible. */
+[data-testid="stSidebarCollapsedControl"], [data-testid="collapsedControl"],
+[data-testid="stSidebarCollapseButton"]{ visibility:visible !important; z-index:999990; }
 
 /* ---- page rhythm ---- */
 .block-container{ padding-top:1.5rem; padding-bottom:3rem; max-width:1180px; }
@@ -137,6 +145,10 @@ div[data-baseweb="tab-highlight"], div[data-baseweb="tab-border"]{ display:none 
 [data-testid="stMetric"]::before{ content:""; position:absolute; left:0; top:0; bottom:0; width:4px; background:var(--hg-grad); }
 [data-testid="stMetricValue"]{ color:var(--hg-primary); font-weight:800; }
 [data-testid="stMetricLabel"]{ color:var(--hg-muted); font-weight:600; }
+/* Let labels wrap onto two lines instead of truncating ("Compa…", "Intros S…"). */
+[data-testid="stMetricLabel"], [data-testid="stMetricLabel"] p, [data-testid="stMetricLabel"] > div{
+  white-space:normal !important; overflow:visible !important; text-overflow:clip !important;
+}
 
 /* ---- expanders ---- */
 [data-testid="stExpander"]{ border:1px solid var(--hg-line); border-radius:14px; box-shadow:0 1px 3px rgba(16,24,40,.04); overflow:hidden; }
@@ -151,6 +163,23 @@ div[data-testid="stAlert"]{ border-radius:12px; border-left-width:4px; }
 
 /* ---- sidebar ---- */
 section[data-testid="stSidebar"]{ background:linear-gradient(180deg,#faf9ff 0%,#f3f1fb 100%); border-right:1px solid var(--hg-line); }
+
+/* ---- sidebar pipeline stat panel ---- */
+.hg-side-card{ background:#fff; border:1px solid var(--hg-line); border-radius:14px; padding:13px 15px; box-shadow:0 1px 3px rgba(16,24,40,.05); }
+.hg-side-total{ font-size:.7rem; font-weight:700; color:var(--hg-muted); text-transform:uppercase; letter-spacing:.06em; }
+.hg-side-total .n{ display:block; font-size:2rem; font-weight:800; color:var(--hg-primary); line-height:1.05; margin:2px 0 6px; }
+.hg-side-row{ display:flex; align-items:center; gap:8px; padding:7px 0; border-top:1px solid var(--hg-line); font-size:.86rem; }
+.hg-side-row .dot{ width:9px; height:9px; border-radius:50%; flex-shrink:0; }
+.hg-side-row .lbl{ color:var(--hg-ink); font-weight:500; }
+.hg-side-row .val{ margin-left:auto; font-weight:800; color:var(--hg-ink); font-variant-numeric:tabular-nums; }
+
+/* ---- sidebar follow-ups-due card ---- */
+.hg-fu-head{ font-size:.86rem; font-weight:600; color:var(--hg-ink); margin-bottom:4px; }
+.hg-fu-count{ display:inline-block; min-width:20px; text-align:center; background:#fef3c7; color:#92400e; font-weight:800; border-radius:999px; padding:1px 7px; font-size:.78rem; margin-right:5px; }
+.hg-fu-row{ display:flex; align-items:center; gap:8px; padding:6px 0; border-top:1px solid var(--hg-line); font-size:.84rem; }
+.hg-fu-row .nm{ color:var(--hg-ink); font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.hg-fu-row .fu{ margin-left:auto; flex-shrink:0; background:var(--hg-soft); color:var(--hg-primary); font-weight:700; font-size:.72rem; border-radius:999px; padding:1px 8px; border:1px solid var(--hg-line); }
+.hg-fu-more{ font-size:.78rem; color:var(--hg-muted); font-weight:600; padding-top:7px; border-top:1px solid var(--hg-line); margin-top:2px; }
 
 /* ---- status badges (use with unsafe_allow_html) ---- */
 .hg-badge{ display:inline-block; padding:.15rem .6rem; border-radius:999px; font-size:.72rem; font-weight:700; }
@@ -1008,18 +1037,38 @@ with tab_wizard:
 
     # ── Sidebar ───────────────────────────────────────────────────────────────
     with st.sidebar:
-        st.header("📊 Pipeline Overview")
+        st.subheader("📊 Pipeline Overview")
         try:
             supabase = get_supabase()
             leads = supabase.table("leads").select("status").execute().data
             by_status = {}
             for l in leads:
-                s = l["status"]
+                s = l["status"] or "new"
                 by_status[s] = by_status.get(s, 0) + 1
 
-            st.metric("Total Leads", len(leads))
-            for status, count in by_status.items():
-                st.write(f"**{status.title()}:** {count}")
+            # One clean stat panel: big total + colour-coded status rows with
+            # right-aligned counts (replaces the plain "New: 40" text lines).
+            STATUS_STYLE = {
+                "new":          ("#6366f1", "New"),
+                "emailed":      ("#3b82f6", "Emailed"),
+                "following_up": ("#f59e0b", "Following up"),
+                "replied":      ("#10b981", "Replied"),
+                "bounced":      ("#ef4444", "Bounced"),
+                "closed":       ("#9ca3af", "Closed"),
+                "skipped":      ("#9ca3af", "Skipped"),
+            }
+            _order = ["new", "emailed", "following_up", "replied", "bounced", "closed", "skipped"]
+            _ordered = [s for s in _order if s in by_status] + [s for s in by_status if s not in _order]
+            rows_html = ""
+            for s in _ordered:
+                color, label = STATUS_STYLE.get(s, ("#9ca3af", s.replace("_", " ").title()))
+                rows_html += (f'<div class="hg-side-row"><span class="dot" style="background:{color}"></span>'
+                              f'<span class="lbl">{label}</span><span class="val">{by_status[s]}</span></div>')
+            st.markdown(
+                f'<div class="hg-side-card"><div class="hg-side-total">Total Leads'
+                f'<span class="n">{len(leads)}</span></div>{rows_html}</div>',
+                unsafe_allow_html=True,
+            )
 
             st.divider()
             st.subheader("⏰ Follow-ups Due")
@@ -1028,15 +1077,25 @@ with tab_wizard:
                 .in_("status", ["emailed", "following_up"]) \
                 .lte("next_followup_date", today).execute().data
             if due:
-                st.warning(f"{len(due)} follow-up(s) due today!")
-                for d in due[:5]:
-                    st.write(f"- {d['company_name']} (follow-up #{d['followup_count']+1})")
-                if st.button("Send Today's Follow-ups"):
+                rows_html = ""
+                for d in due[:6]:
+                    nm = d.get("company_name") or "—"
+                    fu = (d.get("followup_count") or 0) + 1
+                    rows_html += (f'<div class="hg-fu-row"><span class="nm" title="{nm}">{nm}</span>'
+                                  f'<span class="fu">#{fu}</span></div>')
+                more_html = f'<div class="hg-fu-more">+{len(due) - 6} more due</div>' if len(due) > 6 else ""
+                st.markdown(
+                    f'<div class="hg-side-card"><div class="hg-fu-head">'
+                    f'<span class="hg-fu-count">{len(due)}</span>due today</div>'
+                    f'{rows_html}{more_html}</div>',
+                    unsafe_allow_html=True,
+                )
+                if st.button("📤 Send Today's Follow-ups", use_container_width=True):
                     from main import send_followups
                     count = send_followups(get_supabase(), 0)
                     st.success(f"Sent {count} follow-ups!")
             else:
-                st.success("No follow-ups due today.")
+                st.success("✅ No follow-ups due today.")
         except Exception:
             st.info("No data yet.")
 
@@ -1149,7 +1208,7 @@ with tab_history:
         c1, c2, c3, c4, c5, c6 = st.columns(6)
         c1.metric("🏢 Companies", total_companies)
         c2.metric("👤 People", total_people)
-        c3.metric("📧 Intros Sent", intro_emails)
+        c3.metric("📧 Intros", intro_emails)
         c4.metric("🔁 Follow-ups", followup_emails)
         c5.metric("✅ Delivered", success_emails)
         c6.metric("💬 Replied", replied)
