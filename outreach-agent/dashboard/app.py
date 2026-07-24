@@ -1264,14 +1264,16 @@ with tab_history:
                     f"🔁 {len(followups)} follow-ups &nbsp;|&nbsp; "
                     f"✅ {success_rate} delivered"
                 ):
-                    mc1, mc2, mc3, mc4, mc5 = st.columns([2, 2, 2, 2, 3])
-                    mc1.metric("People Reached", people_ct)
-                    mc2.metric("Companies", companies_ct)
-                    mc3.metric("Delivered", len(delivered))
-                    mc4.metric("Failed", len(failed))
-                    with mc5:
+                    mc1, mc2, mc3, mc4 = st.columns(4)
+                    mc1.metric("👤 People", people_ct)
+                    mc2.metric("🏢 Companies", companies_ct)
+                    mc3.metric("✅ Delivered", len(delivered))
+                    mc4.metric("❌ Failed", len(failed))
+
+                    # Rename lives in its own control, not crammed into the metric row.
+                    with st.expander("✏️ Rename this campaign"):
                         new_camp_name = st.text_input(
-                            "✏️ Rename Campaign",
+                            "Campaign name",
                             value=camp_name,
                             key=f"rename_{cid}",
                             label_visibility="collapsed",
@@ -1287,8 +1289,10 @@ with tab_history:
                                 pass
                     st.markdown("---")
 
-                    # Headers
-                    hdr = st.columns([1.5, 1.8, 2.2, 2.0, 2.2, 2.5, 2.0])
+                    # Shared column widths so the header and every data row line up.
+                    # Company gets real width (was 1.5 → wrapped to "Compan y").
+                    _row_ratios = [2.2, 2.2, 2.6, 2.4, 2.2, 2.4, 0.7]
+                    hdr = st.columns(_row_ratios)
                     for h, t in zip(hdr, ["Company", "Full Name & LinkedIn", "Email", "Emails Sent", "Pending Emails", "Response", "✓"]):
                         h.markdown(f"**{t}**")
                     st.markdown("---")
@@ -1338,7 +1342,7 @@ with tab_history:
 
                         all_status = "✅" if all(e.get("gmail_message_id") for e in emails) else "⚠️"
 
-                        c1, c2, c3, c4, c5, c6, c7 = st.columns([1.5, 1.8, 2.0, 2.2, 2.5, 2.0, 1.0])
+                        c1, c2, c3, c4, c5, c6, c7 = st.columns(_row_ratios)
                         c1.write(f"**{company}**")
                         if linkedin:
                             c2.markdown(f"[{name}]({linkedin}) 🔗")
