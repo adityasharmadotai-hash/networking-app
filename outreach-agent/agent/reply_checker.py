@@ -159,6 +159,99 @@ def check_replies_for_lead(service, lead: dict) -> dict | None:
         return None
 
 
+# A bounce/NDR arrives FROM mailer-daemon (not from the contact), so the per-lead
+# `from:{contact}` search can never catch it. These hints separate a PERMANENT
+# (hard) failure — which should mark the lead bounced + suppress the address —
+# from a TRANSIENT delay ("will retry"), which Gmail is still retrying.
+PERMANENT_BOUNCE_HINTS = [
+    "550", "551", "553", "554", "5.1.1", "5.1.10", "5.2.1", "5.4.1", "5.5.0",
+    "address not found", "does not exist", "no such user", "user unknown",
+    "mailbox not found", "recipient not found", "couldn't be delivered to",
+    "wasn't found", "unable to receive mail", "permanent", "permanently",
+]
+TRANSIENT_BOUNCE_HINTS = [
+    "delay", "temporary problem", "will retry", "delivery incomplete",
+    "notified if", "being delayed",
+]
+
+
+def check_bounces(service, supabase, lookback_days: int = 3) -> int:
+    """Scan mailer-daemon/postmaster NDRs, extract the failed recipient, and mark
+    the matching lead as bounced — for PERMANENT failures only (transient delays
+    are left alone; Gmail retries those). Hard bounces are also suppressed so we
+    never email that address again."""
+    try:
+        q = f"(from:mailer-daemon OR from:postmaster) newer_than:{lookback_days}d"
+        res = service.users().messages().list(userId="me", q=q, maxResults=50).execute()
+        bounce_msgs = res.get("messages", [])
+    except Exception as e:
+        print(f"[Reply Checker] Bounce scan failed: {e}")
+        return 0
+
+    if not bounce_msgs:
+        return 0
+
+    # Map active-lead emails -> lead row so we can attribute a bounce to a lead.
+    leads = supabase.table("leads") \
+        .select("id, contact_email, response_status, company_name") \
+        .in_("status", ["emailed", "following_up"]).execute().data or []
+    by_email = {(l.get("contact_email") or "").strip().lower(): l for l in leads if l.get("contact_email")}
+    if not by_email:
+        return 0
+
+    updated = 0
+    for m in bounce_msgs:
+        try:
+            msg = service.users().messages().get(
+                userId="me", id=m["id"], format="metadata",
+                metadataHeaders=["Subject", "X-Failed-Recipients"],
+            ).execute()
+        except Exception:
+            continue
+
+        headers = {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
+        subject = headers.get("Subject", "")
+        failed  = headers.get("X-Failed-Recipients", "")
+        snippet = msg.get("snippet", "")
+        subj_l  = subject.lower()
+        text    = (subject + " " + snippet).lower()
+
+        # Gmail labels failures "(Failure)" and delays "(Delay)". Only a genuine
+        # permanent failure should mark the lead bounced.
+        is_permanent = ("failure" in subj_l) or any(h in text for h in PERMANENT_BOUNCE_HINTS)
+        is_transient = ("delay" in subj_l) or (
+            any(h in text for h in TRANSIENT_BOUNCE_HINTS) and "failure" not in subj_l
+        )
+        if is_transient or not is_permanent:
+            continue
+
+        # Which recipient failed? Prefer the explicit header; fall back to any
+        # known lead email mentioned in the snippet.
+        candidates = [e.strip().lower() for e in failed.split(",") if e.strip()]
+        if not candidates:
+            candidates = [em for em in by_email if em in snippet.lower()]
+
+        for em in candidates:
+            lead = by_email.get(em)
+            if not lead or lead.get("response_status") == "bounced":
+                continue
+            supabase.table("leads").update({
+                "response_status": "bounced",
+                "response_snippet": (subject or snippet)[:300],
+                "response_checked_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("id", lead["id"]).execute()
+            # Hard bounce → never contact this address again.
+            try:
+                from agent.suppression import record_unsubscribe
+                record_unsubscribe(em, reason="bounce")
+            except Exception:
+                pass
+            print(f"[Reply Checker] 🔴 BOUNCED (permanent): {lead.get('company_name')} <{em}>")
+            updated += 1
+
+    return updated
+
+
 def check_all_replies():
     """Check all emailed/following_up leads for replies. Update Supabase."""
     supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
@@ -201,6 +294,16 @@ def check_all_replies():
             supabase.table("leads").update({
                 "response_checked_at": datetime.now(timezone.utc).isoformat()
             }).eq("id", lead["id"]).execute()
+
+    # Bounces arrive from mailer-daemon, not from the contact, so they need a
+    # separate sweep (the per-lead loop above can never see them).
+    try:
+        bounced = check_bounces(service, supabase)
+        if bounced:
+            print(f"[Reply Checker] {bounced} lead(s) marked as bounced.")
+        updated += bounced
+    except Exception as e:
+        print(f"[Reply Checker] Bounce check error: {e}")
 
     print(f"[Reply Checker] Done. {updated} leads updated.")
     return updated
