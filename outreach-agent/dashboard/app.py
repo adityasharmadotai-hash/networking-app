@@ -664,9 +664,17 @@ with tab_wizard:
         ) or st.session_state.email_template_body
 
         with st.expander("👁️ Preview intro email"):
+            # Sample values for every placeholder the templates support, so the
+            # preview shows real personalization (role, source, specialty) instead
+            # of literal {specialty} tokens.
+            _sample = {
+                "first_name": "Sarah", "company": "Acme Corp", "company_pos": "Acme Corp's",
+                "role": "Full Stack Developer", "short_role": "Full Stack Developer",
+                "specialty": "full-stack", "source_phrase": " on LinkedIn",
+            }
             try:
-                preview_subject = new_subject.format(first_name="Sarah", company="Acme Corp", role="Full Stack Developer")
-                preview_body = new_body.replace("{first_name}", "Sarah").replace("{company}", "Acme Corp").replace("{role}", "Full Stack Developer")
+                preview_subject = new_subject.format(**_sample)
+                preview_body = new_body.format(**_sample)
                 st.markdown(f"**Subject:** {preview_subject}")
                 st.markdown("---")
                 st.markdown(preview_body, unsafe_allow_html=True)
@@ -838,7 +846,21 @@ with tab_wizard:
                         add_log(f"  ❌ Exception: {e}")
                         st.warning(f"Error for {company}: {e}")
                     if contact:
-                        job.update(contact)
+                        # Apply the same gates the CLI path uses — the dashboard
+                        # skipped these, which let malformed / wrong-company emails
+                        # through (e.g. a personal gmail on a company lead).
+                        from agent.email_validation import validate_email
+                        from agent.contact_finder import email_matches_company
+                        em = (contact.get("contact_email") or "")
+                        _ok, _reason = validate_email(em)
+                        if not _ok:
+                            add_log(f"  🚫 Rejected email ({_reason}): {em}")
+                            job["contact_email"] = None
+                        elif not email_matches_company(em, company):
+                            add_log(f"  🚫 Rejected — {em} domain doesn't match {company}")
+                            job["contact_email"] = None
+                        else:
+                            job.update(contact)
                     else:
                         job["contact_email"] = None
                     results.append(job)

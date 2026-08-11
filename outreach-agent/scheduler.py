@@ -50,6 +50,11 @@ def is_send_window() -> bool:
 
 def process_queue():
     """Send any queued emails that are due — only within send window."""
+    # Hard kill-switch: set SENDING_PAUSED=true (Render env) to stop all sending
+    # immediately without a code deploy. Reply/bounce checks keep running.
+    if os.getenv("SENDING_PAUSED", "false").lower() == "true":
+        print("[Scheduler] ⏸️  SENDING_PAUSED=true — skipping all sends this run.")
+        return 0
     if not is_send_window():
         return 0
 
@@ -102,6 +107,17 @@ def process_queue():
             print(f"[Scheduler] 🚫 Skipped (unsubscribed): {lead.get('contact_email')}")
             continue
 
+        # Last-line gate: never send to a malformed/undeliverable address — a bounce
+        # both wastes the send and damages sender reputation for everyone else.
+        from agent.email_validation import validate_email
+        _ok, _reason = validate_email(lead.get("contact_email"))
+        if not _ok:
+            supabase.table("email_queue").update({
+                "status": "cancelled", "error_message": f"invalid email: {_reason}",
+            }).eq("id", item["id"]).execute()
+            print(f"[Scheduler] 🚫 Skipped (invalid email: {_reason}): {lead.get('contact_email')}")
+            continue
+
         try:
             subject, body = render_template(email_type, lead)
             # Space out sends within a run so a batch doesn't all leave in the
@@ -151,14 +167,24 @@ def process_queue():
                         "campaign_id": item.get("campaign_id"),
                     }).execute()
 
-                    followup_count = lead.get("followup_count", 0)
+                    # Advance the counter from the email TYPE we just sent
+                    # (followup_2 -> count 2), NOT from the queued snapshot. The old
+                    # snapshot let duplicate rows keep resetting count to 1, so leads
+                    # were stuck on follow-up #1 forever and never reached #2-5.
+                    if is_followup:
+                        try:
+                            new_count = int(email_type.split("_")[1])
+                        except (IndexError, ValueError):
+                            new_count = (lead.get("followup_count", 0) or 0) + 1
+                    else:
+                        new_count = 0
                     next_followup  = (datetime.now(timezone.utc) + timedelta(days=FOLLOWUP_INTERVAL_DAYS)).date().isoformat()
                     new_status     = "following_up" if is_followup else "emailed"
 
                     lead_update = {
                         "status": new_status,
                         "last_contacted_at": datetime.now(timezone.utc).isoformat(),
-                        "followup_count": followup_count + (1 if is_followup else 0),
+                        "followup_count": new_count,
                         "next_followup_date": next_followup,
                     }
                     # Record the intro's thread + Message-ID so later follow-ups
@@ -212,10 +238,20 @@ def schedule_followups():
     from agent.suppression import get_unsubscribed_emails
     suppressed = get_unsubscribed_emails()
 
+    # Idempotency guard: never queue a follow-up for a lead that already has an
+    # UNSENT email in the queue. Without this, every run re-queues the same leads
+    # (their followup_count only advances once the email sends) — which is exactly
+    # what produced 30 duplicate follow-ups per lead.
+    existing = supabase.table("email_queue").select("lead_data") \
+        .in_("status", ["pending", "awaiting_approval"]).execute().data or []
+    already_queued = {(r.get("lead_data") or {}).get("lead_id") for r in existing}
+    already_queued.discard(None)
+
     due_leads = [
         l for l in result.data
         if l.get("response_status") not in ("positive", "negative", "bounced", "unsubscribed")
         and (l.get("contact_email") or "").strip().lower() not in suppressed
+        and l["id"] not in already_queued
     ]
 
     if not due_leads:

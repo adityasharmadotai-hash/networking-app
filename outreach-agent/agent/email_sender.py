@@ -92,9 +92,9 @@ EMAIL_TEMPLATES = {
         "subject": "{company} — a candidate for your {short_role} opening",
         "body": """Hi {first_name},
 
-I saw that {company} is hiring for a {role} — exciting to see the team growing.
+I came across {company_pos} {short_role} opening{source_phrase} — exciting to see the team growing.
 
-I lead candidate placement at HireGen, and I have someone I genuinely think is worth a look for this role: they're actively interviewing, have directly relevant experience, and could ramp quickly.
+I lead candidate placement at HireGen, and I have someone I genuinely think is worth a look for this role: they're actively interviewing, have hands-on {specialty} experience, and could ramp quickly.
 
 Rather than send a résumé out of the blue, would you be open to a quick 15-minute call this week? And if the timing isn't right, no worries at all.
 
@@ -188,9 +188,9 @@ INTRO_SUBJECT_VARIANTS = [
 INTRO_BODY_VARIANTS = [
     """Hi {first_name},
 
-I saw that {company} is hiring for a {role} — exciting to see the team growing.
+I came across {company_pos} {short_role} opening{source_phrase} — exciting to see the team growing.
 
-I lead candidate placement at HireGen, and I have someone I genuinely think is worth a look for this role: they're actively interviewing, have directly relevant experience, and could ramp quickly.
+I lead candidate placement at HireGen, and I have someone I genuinely think is worth a look for this role: they're actively interviewing, have hands-on {specialty} experience, and could ramp quickly.
 
 Rather than send a résumé out of the blue, would you be open to a quick 15-minute call this week? And if the timing isn't right, no worries at all.
 
@@ -203,9 +203,9 @@ P.S. If you'd prefer I don't follow up, just reply "no thanks" and I'll close th
 
     """Hi {first_name},
 
-Saw that {company} has an opening for a {role} — congrats on the growth.
+Saw {company_pos} {short_role} opening{source_phrase} — congrats on the growth.
 
-I run placements at HireGen and I'm working with someone who lines up well with this role: strong hands-on background, actively interviewing, and could get up to speed quickly.
+I run placements at HireGen and I'm working with someone who lines up well with this role: a strong hands-on {specialty} background, actively interviewing, and could get up to speed quickly.
 
 Would a quick 15 minutes this week be worth it to see if they're a fit? No pressure at all if the timing's off.
 
@@ -218,9 +218,9 @@ P.S. Not the right time? Just reply "no thanks" and I won't follow up.""",
 
     """Hi {first_name},
 
-Noticed {company} is hiring a {role}, so I'll keep this short.
+Noticed {company_pos} {short_role} opening{source_phrase}, so I'll keep this short.
 
-At HireGen I place engineers, and I have one candidate in particular who fits this role well — relevant experience, available now, and genuinely interested.
+At HireGen I place engineers, and I have one candidate in particular who fits this role well — hands-on {specialty} experience, available now, and genuinely interested.
 
 Open to a short call this week, or would a quick profile be easier to start? Whichever works for you.
 
@@ -338,6 +338,46 @@ def _short_role(role: str) -> str:
     return (r[:44].rstrip() + "…") if len(r) > 45 else r
 
 
+# Real, per-lead personalization from data we already store — no LLM, no guessing.
+_KNOWN_SOURCES = {
+    "linkedin": "LinkedIn", "indeed": "Indeed", "glassdoor": "Glassdoor",
+    "greenhouse": "Greenhouse", "lever": "Lever", "ziprecruiter": "ZipRecruiter",
+    "the muse": "The Muse", "themuse": "The Muse", "adzuna": "Adzuna",
+    "wellfound": "Wellfound", "angellist": "Wellfound", "builtin": "Built In",
+    "dice": "Dice", "monster": "Monster", "simplyhired": "SimplyHired",
+}
+
+
+def _job_source_phrase(source: str) -> str:
+    """A natural ' on <Board>' clause when the source is a real, nameable job
+    board — empty otherwise (so we never say 'on google_jobs'). Ready to append."""
+    key = (source or "").lower().replace("via ", "").strip()
+    for k, v in _KNOWN_SOURCES.items():
+        if k in key:
+            return f" on {v}"
+    return ""
+
+
+def _role_specialty(role: str) -> str:
+    """Derive a short specialty from the job title so the copy can say 'hands-on
+    back-end experience' instead of a generic filler. Falls back to a safe phrase."""
+    r = (role or "").lower()
+    checks = [
+        (("front-end", "frontend", "front end"), "front-end"),
+        (("back-end", "backend", "back end", "nodejs", "node.js"), "back-end"),
+        (("full-stack", "fullstack", "full stack"), "full-stack"),
+        (("machine learning", "ml engineer", "ml/", "/ml"), "machine learning"),
+        (("data engineer", "data scientist", "data platform"), "data"),
+        (("devops", "infrastructure", "platform engineer", "site relia", "sre"), "infrastructure"),
+        (("mobile", "ios", "android"), "mobile"),
+        (("ai engineer", "applied ai", "genai", "gen ai", "llm"), "AI"),
+    ]
+    for needles, label in checks:
+        if any(n in r for n in needles):
+            return label
+    return "software engineering"
+
+
 def render_template(template_key: str, lead: dict) -> tuple[str, str]:
     """Fill in template placeholders and return (subject, body).
     Always uses real first name — skips sending if name unavailable.
@@ -350,11 +390,17 @@ def render_template(template_key: str, lead: dict) -> tuple[str, str]:
         first_name = "there"  # last resort, dashboard should filter these out
 
     role = lead.get("job_title_hiring_for") or "software engineering"
+    company = lead.get("company_name", "your company")
+    # Grammatical possessive: "Cerebras'" not "Cerebras's"; "Acme's".
+    company_pos = company + ("'" if company.rstrip().lower().endswith("s") else "'s")
     context = {
         "first_name": first_name,
-        "company": lead.get("company_name", "your company"),
+        "company": company,
+        "company_pos": company_pos,
         "role": role,
         "short_role": _short_role(role),
+        "specialty": _role_specialty(role),
+        "source_phrase": _job_source_phrase(lead.get("job_source")),
     }
 
     if template_key == "intro":
