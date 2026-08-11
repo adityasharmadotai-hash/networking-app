@@ -695,7 +695,7 @@ with tab_wizard:
             }
 
         followup_updates = {}
-        for i in range(1, 6):
+        for i in range(1, 3):
             key = f"followup_{i}"
             tpl = st.session_state.followup_templates.get(key, EMAIL_TEMPLATES.get(key, {}))
             with st.expander(f"Follow-up #{i} — sent {i * 3} days after intro"):
@@ -1413,7 +1413,7 @@ with tab_history:
                            followup_count < 5 and next_followup_date:
                             try:
                                 next_dt = datetime.fromisoformat(next_followup_date).replace(tzinfo=timezone.utc)
-                                for i in range(followup_count + 1, 6):
+                                for i in range(followup_count + 1, 3):
                                     label = EMAIL_TYPE_LABELS.get(f"followup_{i}", f"Follow-up {i}")
                                     days_offset = (i - followup_count - 1) * 3
                                     send_date = next_dt + timedelta(days=days_offset)

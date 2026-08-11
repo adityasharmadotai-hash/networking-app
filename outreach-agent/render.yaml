@@ -44,7 +44,7 @@ services:
       - key: FOLLOWUP_INTERVAL_DAYS
         value: "3"
       - key: MAX_FOLLOWUPS
-        value: "5"
+        value: "2"
 
 # ----------------------------------------------------------------------------
 # OPTIONAL: host the Streamlit dashboard on Render too (instead of Streamlit
