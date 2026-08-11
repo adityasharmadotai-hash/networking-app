@@ -277,11 +277,22 @@ def schedule_followups():
     # Idempotency guard: never queue a follow-up for a lead that already has an
     # UNSENT email in the queue. Without this, every run re-queues the same leads
     # (their followup_count only advances once the email sends) — which is exactly
-    # what produced 30 duplicate follow-ups per lead.
-    existing = supabase.table("email_queue").select("lead_data") \
-        .in_("status", ["pending", "awaiting_approval"]).execute().data or []
-    already_queued = {(r.get("lead_data") or {}).get("lead_id") for r in existing}
-    already_queued.discard(None)
+    # what produced dozens of duplicate follow-ups per lead. Paginated so a queue
+    # with >1000 unsent rows is still fully accounted for (a plain select caps at
+    # 1000 and would let leads past that slip through and re-duplicate).
+    already_queued = set()
+    _off = 0
+    while True:
+        _chunk = supabase.table("email_queue").select("lead_data") \
+            .in_("status", ["pending", "awaiting_approval"]) \
+            .range(_off, _off + 999).execute().data or []
+        for _r in _chunk:
+            _lid = (_r.get("lead_data") or {}).get("lead_id")
+            if _lid:
+                already_queued.add(_lid)
+        if len(_chunk) < 1000:
+            break
+        _off += 1000
 
     due_leads = [
         l for l in result.data

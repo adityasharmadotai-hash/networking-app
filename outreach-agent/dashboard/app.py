@@ -1508,21 +1508,27 @@ with tab_queue:
 
     st.divider()
 
-    # ── Load the queue ────────────────────────────────────────────────────────
-    try:
-        queue = supabase.table("email_queue").select("*").order("scheduled_for").execute().data or []
-    except Exception as e:
-        st.error(f"Could not load the email queue: {e}")
-        queue = []
+    # ── Queue counts (server-side count, so >1000 rows still tally correctly —
+    #    a plain .select("*") caps at 1000 rows and undercounts a big queue). ────
+    def _q_count(status, etype=None):
+        q = supabase.table("email_queue").select("id", count="exact").eq("status", status)
+        if etype == "intro":
+            q = q.eq("email_type", "intro")
+        elif etype == "followup":
+            q = q.like("email_type", "followup%")
+        try:
+            return q.execute().count or 0
+        except Exception:
+            return 0
 
-    pending = [q for q in queue if q.get("status") == "pending"]
-    intros = [q for q in pending if q.get("email_type") == "intro"]
-    followups = [q for q in pending if str(q.get("email_type", "")).startswith("followup")]
+    n_pending  = _q_count("pending")
+    n_intros   = _q_count("pending", "intro")
+    n_followup = _q_count("pending", "followup")
 
     m1, m2, m3 = st.columns(3)
-    m1.metric("⏳ Unsent (pending)", len(pending))
-    m2.metric("📧 Intros", len(intros))
-    m3.metric("🔁 Follow-ups queued", len(followups))
+    m1.metric("⏳ Unsent (pending)", n_pending)
+    m2.metric("📧 Intros", n_intros)
+    m3.metric("🔁 Follow-ups queued", n_followup)
 
     st.divider()
 
@@ -1530,7 +1536,20 @@ with tab_queue:
     st.subheader("Unsent emails")
     choice = st.radio("Show", ["All", "Intros only", "Follow-ups only"],
                       horizontal=True, key="queue_filter")
-    rows = intros if choice == "Intros only" else followups if choice == "Follow-ups only" else pending
+    # Load only PENDING rows (server-side filter + cap) so the list stays correct
+    # even when the table holds thousands of cancelled/sent rows.
+    _q = supabase.table("email_queue").select("*").eq("status", "pending").order("scheduled_for")
+    if choice == "Intros only":
+        _q = _q.eq("email_type", "intro")
+    elif choice == "Follow-ups only":
+        _q = _q.like("email_type", "followup%")
+    try:
+        rows = _q.limit(500).execute().data or []
+    except Exception as e:
+        st.error(f"Could not load the email queue: {e}")
+        rows = []
+    if len(rows) >= 500:
+        st.caption(f"Showing first 500 of {n_pending} pending (filtered).")
 
     if not rows:
         st.info("✅ No unsent emails in the queue.")
