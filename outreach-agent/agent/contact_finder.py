@@ -363,6 +363,12 @@ def prospect_contact(company_name: str) -> dict | None:
 
         if contact:
             email = contact.get("contact_email", "")
+            # Reject malformed / undeliverable addresses before anything else.
+            from agent.email_validation import validate_email
+            _ok, _reason = validate_email(email)
+            if not _ok:
+                print(f"[Contact Finder] ⚠️ Rejected invalid email ({_reason}): {email} — trying next title.")
+                continue
             # Reject contacts whose email domain doesn't match the target company —
             # the LinkedIn search often matches people who only *mention* the company.
             if VERIFY_CONTACT_DOMAIN and not email_matches_company(email, company_name):
