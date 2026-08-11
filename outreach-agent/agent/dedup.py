@@ -47,9 +47,37 @@ def _get_token_path() -> str:
     return GMAIL_TOKEN_FILE
 
 
+# Corporate suffix words dropped from the dedup key so name variants collapse:
+# "Acme", "Acme Inc.", "Acme LLC", and "Acme Technologies" all match.
+_COMPANY_SUFFIXES = {
+    "inc", "incorporated", "llc", "llp", "ltd", "limited", "corp", "corporation",
+    "co", "company", "group", "holdings", "international", "global",
+    "technologies", "technology", "tech", "solutions", "labs", "systems",
+    "software", "services", "consulting", "partners", "pvt", "private",
+    "gmbh", "plc", "the",
+}
+
+# Personal/free mailbox domains — never used as a "same company" signal, since
+# many different people share them (blocking by gmail.com would be wrong).
+FREE_EMAIL_DOMAINS = {
+    "gmail.com", "googlemail.com", "yahoo.com", "hotmail.com", "outlook.com",
+    "live.com", "aol.com", "icloud.com", "proton.me", "protonmail.com", "gmx.com",
+}
+
+
 def normalize(name: str) -> str:
-    """Lowercase, strip punctuation for fuzzy company name matching."""
-    return re.sub(r"[^a-z0-9]", "", name.lower().strip())
+    """Canonical company dedup key: lowercase, drop corporate suffix words
+    (Inc/LLC/Technologies/…), strip punctuation. So 'Acme Inc.', 'Acme LLC', and
+    'Acme' collapse to the same key."""
+    words = [w for w in re.split(r"[^a-z0-9]+", (name or "").lower()) if w]
+    core = [w for w in words if w not in _COMPANY_SUFFIXES]
+    return "".join(core or words)  # if the name is ALL suffixes, keep it as-is
+
+
+def email_domain(email: str) -> str:
+    """Lowercased domain of an email, or '' if none."""
+    e = (email or "").strip().lower()
+    return e.split("@", 1)[-1] if "@" in e else ""
 
 
 def get_existing_clients() -> set[str]:
@@ -99,6 +127,38 @@ def get_already_contacted(days: int = 30) -> set[str]:
     except Exception as e:
         print(f"[Dedup] Could not load Supabase leads: {e}")
         return set()
+
+
+def get_recently_contacted_identities(days: int = 30) -> tuple[set, set, set]:
+    """Identity of everyone actually contacted (intro sent) in the last N days,
+    as three sets: (normalized companies, exact emails, work domains).
+
+    Used to block a *fresh intro* to a company / person / domain we already
+    reached — even when a new discovery re-surfaces them under a slightly
+    different name. Follow-ups are exempt (they must re-contact the same person).
+    Personal/free email domains are excluded from the domain set."""
+    companies, emails, domains = set(), set(), set()
+    try:
+        from datetime import datetime, timedelta, timezone
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+        rows = supabase.table("leads") \
+            .select("company_name, contact_email, last_contacted_at") \
+            .gte("last_contacted_at", cutoff).execute().data or []
+        for r in rows:
+            if r.get("company_name"):
+                companies.add(normalize(r["company_name"]))
+            em = (r.get("contact_email") or "").strip().lower()
+            if em and "@" in em:
+                emails.add(em)
+                dom = email_domain(em)
+                if dom and dom not in FREE_EMAIL_DOMAINS:
+                    domains.add(dom)
+        print(f"[Dedup] Recently-contacted identities (last {days}d): "
+              f"{len(companies)} companies, {len(emails)} emails, {len(domains)} domains.")
+    except Exception as e:
+        print(f"[Dedup] Could not load recent-contact identities: {e}")
+    return companies, emails, domains
 
 
 def filter_leads(leads: list[dict]) -> list[dict]:

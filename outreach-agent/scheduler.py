@@ -29,6 +29,7 @@ POLL_INTERVAL           = 30            # seconds between queue checks
 REPLY_CHECK_INTERVAL    = 4 * 3600      # check replies every 4 hours
 FOLLOWUP_INTERVAL_DAYS  = 3
 MAX_FOLLOWUPS           = 5
+RECENT_CONTACT_DAYS     = int(os.getenv("RECENT_CONTACT_DAYS", "30"))  # dedup window for fresh intros
 PACIFIC                 = ZoneInfo("America/Los_Angeles")
 SEND_HOUR_START         = 8             # 8 AM Pacific
 SEND_HOUR_END           = 18            # 6 PM Pacific
@@ -95,6 +96,12 @@ def process_queue():
     from agent.suppression import get_unsubscribed_emails
     suppressed = get_unsubscribed_emails()
 
+    # Recently-contacted identities (company / email / domain) — loaded lazily once
+    # per run and only if an intro is actually in the batch, to gate duplicate
+    # outreach when a new discovery re-surfaces a company/person we already reached.
+    from agent.dedup import normalize, email_domain
+    _recent_ident = None
+
     for idx, item in enumerate(batch):
         lead       = item["lead_data"]
         email_type = item.get("email_type", "intro")
@@ -117,6 +124,35 @@ def process_queue():
             }).eq("id", item["id"]).execute()
             print(f"[Scheduler] 🚫 Skipped (invalid email: {_reason}): {lead.get('contact_email')}")
             continue
+
+        # Duplicate-outreach guard (INTROS ONLY): if we already sent an intro to
+        # this company, this exact person, or this work domain within the window,
+        # skip — a re-discovered Google result must not trigger a second intro.
+        # Follow-ups are exempt: they SHOULD re-contact the same person.
+        if email_type == "intro":
+            if _recent_ident is None:
+                from agent.dedup import get_recently_contacted_identities
+                _recent_ident = get_recently_contacted_identities(RECENT_CONTACT_DAYS)
+            _rc_companies, _rc_emails, _rc_domains = _recent_ident
+            _em = (lead.get("contact_email") or "").strip().lower()
+            _comp = normalize(lead.get("company_name") or "")
+            _dom = email_domain(_em)
+            _dup = None
+            if _em and _em in _rc_emails:
+                _dup = f"person {_em}"
+            elif _dom and _dom in _rc_domains:
+                _dup = f"domain {_dom}"
+            elif _comp and _comp in _rc_companies:
+                _dup = f"company {lead.get('company_name')}"
+            if _dup:
+                supabase.table("email_queue").update({
+                    "status": "cancelled",
+                    "error_message": f"duplicate outreach: {_dup} already contacted "
+                                     f"within {RECENT_CONTACT_DAYS} days",
+                }).eq("id", item["id"]).execute()
+                print(f"[Scheduler] 🚫 Skipped intro (duplicate — {_dup} contacted "
+                      f"<{RECENT_CONTACT_DAYS}d ago): {lead.get('company_name')}")
+                continue
 
         try:
             subject, body = render_template(email_type, lead)
