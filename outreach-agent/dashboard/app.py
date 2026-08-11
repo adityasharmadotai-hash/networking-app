@@ -1,10 +1,13 @@
 import os
 import sys
+import hmac
 import uuid
 import random
 import pickle
+import hashlib
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 from datetime import date, timedelta, datetime, timezone
 from zoneinfo import ZoneInfo
 PACIFIC = ZoneInfo("America/Los_Angeles")
@@ -19,26 +22,304 @@ from streamlit_quill import st_quill
 
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"))
 
-# Load from Streamlit secrets (cloud) with .env fallback (local)
+# Must be the FIRST Streamlit command — before any st.secrets access below,
+# otherwise Streamlit raises "set_page_config() must be called as the first
+# Streamlit command" (e.g. on hosts with no secrets.toml, like Render).
+st.set_page_config(page_title="HireGen Outreach Agent", page_icon="🎯", layout="wide")
+
+# Load config: env vars first (Render/Railway), then Streamlit secrets (Cloud).
+def _secrets_toml_exists() -> bool:
+    """Whether a secrets.toml exists. Probing st.secrets without one makes
+    Streamlit render a red 'No secrets files found' banner, so check first."""
+    paths = [
+        os.path.expanduser("~/.streamlit/secrets.toml"),
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                     ".streamlit", "secrets.toml"),
+    ]
+    return any(os.path.exists(p) for p in paths)
+
+
 def _secret(key: str, default: str = "") -> str:
-    try:
-        return st.secrets.get(key, os.getenv(key, default))
-    except Exception:
-        return os.getenv(key, default)
+    val = os.getenv(key)
+    if val:
+        return val
+    if _secrets_toml_exists():
+        try:
+            return st.secrets.get(key, default)
+        except Exception:
+            pass
+    return default
 
 SUPABASE_URL = _secret("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = _secret("SUPABASE_SERVICE_ROLE_KEY")
 DAILY_EMAIL_LIMIT = int(_secret("DAILY_EMAIL_LIMIT", "20"))
 FOLLOWUP_INTERVAL_DAYS = int(_secret("FOLLOWUP_INTERVAL_DAYS", "3"))
 
-st.set_page_config(page_title="HireGen Outreach Agent", page_icon="🎯", layout="wide")
-
 st.markdown("""
 <style>
-.step-done { border-left:4px solid #198754 !important; background:#e8f5e9 !important; }
-thead tr th { background-color: #f0f2f6 !important; font-weight: 600; }
+/* ---- typography ---- */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
+
+:root{
+  --hg-primary:#6366f1;
+  --hg-grad:linear-gradient(135deg,#667eea 0%,#764ba2 100%);
+  --hg-ink:#1f2937;
+  --hg-muted:#6b7280;
+  --hg-line:#ece9fb;
+  --hg-soft:#f8f7ff;
+}
+
+html, body, [class*="css"], button, input, textarea, select { font-family:'Inter',system-ui,sans-serif; }
+/* Hide only the toolbar clutter (Deploy button, hamburger menu, run status) and
+   the top decoration bar — NOT the whole header. Nuking the header also hid the
+   arrow that re-opens a collapsed sidebar, leaving no way back. */
+#MainMenu, footer { visibility:hidden; height:0; }
+[data-testid="stToolbar"], [data-testid="stDecoration"], [data-testid="stStatusWidget"]{ display:none !important; }
+header[data-testid="stHeader"]{ background:transparent !important; box-shadow:none !important; }
+/* Belt-and-suspenders: force the sidebar expand/collapse controls to stay visible. */
+[data-testid="stSidebarCollapsedControl"], [data-testid="collapsedControl"],
+[data-testid="stSidebarCollapseButton"]{ visibility:visible !important; z-index:999990; }
+
+/* ---- page rhythm ---- */
+.block-container{ padding-top:1.5rem; padding-bottom:3rem; max-width:1180px; }
+
+/* ---- headings ---- */
+h1{ font-weight:800; letter-spacing:-0.025em; color:var(--hg-ink); }
+h2,h3{ font-weight:700; letter-spacing:-0.015em; color:var(--hg-ink); }
+
+/* ---- gradient hero banner ---- */
+.hg-hero{
+  background:var(--hg-grad); border-radius:18px; padding:1.5rem 1.8rem; margin-bottom:1.3rem;
+  box-shadow:0 12px 30px -12px rgba(102,126,234,.6);
+}
+.hg-hero .t{ color:#fff; font-size:1.85rem; font-weight:800; letter-spacing:-0.025em; line-height:1.1; }
+.hg-hero .s{ color:rgba(255,255,255,.85); font-size:.95rem; font-weight:500; margin-top:.35rem; }
+.hg-hero .chip{
+  display:inline-block; margin-top:.75rem; background:rgba(255,255,255,.2);
+  border:1px solid rgba(255,255,255,.3); padding:.22rem .75rem; border-radius:999px;
+  font-size:.76rem; font-weight:600; color:#fff;
+}
+
+/* ---- lighter page header for secondary tabs ---- */
+.hg-phead{ position:relative; padding-left:15px; margin:2px 0 16px; }
+.hg-phead::before{ content:""; position:absolute; left:0; top:4px; bottom:4px; width:5px; border-radius:3px; background:var(--hg-grad); }
+.hg-phead .t{ font-size:1.5rem; font-weight:800; letter-spacing:-0.02em; line-height:1.12; color:var(--hg-ink); }
+.hg-phead .s{ color:var(--hg-muted); font-size:.9rem; font-weight:500; margin-top:3px; }
+
+/* ---- stepper ---- */
+.hg-steps{ display:flex; gap:.5rem; margin:.2rem 0 .4rem; }
+.hg-step{
+  flex:1; background:#fff; border:1px solid var(--hg-line); border-radius:12px;
+  padding:.6rem .8rem; display:flex; align-items:center; gap:.55rem; box-shadow:0 1px 2px rgba(16,24,40,.04);
+}
+.hg-step .num{
+  width:26px; height:26px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+  font-size:.8rem; font-weight:800; background:var(--hg-soft); color:var(--hg-muted); flex-shrink:0;
+}
+.hg-step .lbl{ font-size:.82rem; font-weight:600; color:var(--hg-muted); line-height:1.15; }
+.hg-step.active{ border-color:transparent; background:var(--hg-grad); box-shadow:0 8px 18px -8px rgba(102,126,234,.6); }
+.hg-step.active .num{ background:rgba(255,255,255,.25); color:#fff; }
+.hg-step.active .lbl{ color:#fff; }
+.hg-step.done .num{ background:#10b981; color:#fff; }
+.hg-step.done .lbl{ color:var(--hg-ink); }
+
+/* ---- tabs as a pill row ---- */
+div[data-baseweb="tab-list"]{ gap:.3rem; background:var(--hg-soft); padding:.35rem; border-radius:14px; border:1px solid var(--hg-line); }
+button[data-baseweb="tab"]{ font-weight:600; border-radius:10px; padding:.4rem .85rem; color:var(--hg-muted); }
+button[data-baseweb="tab"][aria-selected="true"]{ background:#fff; color:var(--hg-primary); box-shadow:0 2px 8px -2px rgba(0,0,0,.12); }
+div[data-baseweb="tab-highlight"], div[data-baseweb="tab-border"]{ display:none !important; }
+
+/* ---- buttons ---- */
+.stButton > button, .stDownloadButton > button, .stFormSubmitButton > button{
+  border-radius:11px; font-weight:600; border:1px solid var(--hg-line); transition:all .15s ease;
+}
+.stButton > button:hover, .stDownloadButton > button:hover{ transform:translateY(-1px); box-shadow:0 6px 16px -6px rgba(0,0,0,.22); }
+.stButton > button[kind="primary"], .stFormSubmitButton > button{ background:var(--hg-grad); border:none; color:#fff; }
+.stButton > button[kind="primary"]:hover{ box-shadow:0 8px 20px -6px rgba(102,126,234,.65); }
+
+/* ---- metric cards ---- */
+[data-testid="stMetric"]{
+  background:#fff; border:1px solid var(--hg-line); border-radius:14px; padding:1rem 1.1rem;
+  box-shadow:0 1px 3px rgba(16,24,40,.05); position:relative; overflow:hidden;
+}
+[data-testid="stMetric"]::before{ content:""; position:absolute; left:0; top:0; bottom:0; width:4px; background:var(--hg-grad); }
+[data-testid="stMetricValue"]{ color:var(--hg-primary); font-weight:800; }
+[data-testid="stMetricLabel"]{ color:var(--hg-muted); font-weight:600; }
+/* Let labels wrap onto two lines instead of truncating ("Compa…", "Intros S…"). */
+[data-testid="stMetricLabel"], [data-testid="stMetricLabel"] p, [data-testid="stMetricLabel"] > div{
+  white-space:normal !important; overflow:visible !important; text-overflow:clip !important;
+}
+
+/* ---- expanders ---- */
+[data-testid="stExpander"]{ border:1px solid var(--hg-line); border-radius:14px; box-shadow:0 1px 3px rgba(16,24,40,.04); overflow:hidden; }
+[data-testid="stExpander"] summary:hover{ background:var(--hg-soft); }
+
+/* ---- inputs ---- */
+.stTextInput input, .stTextArea textarea, .stNumberInput input{ border-radius:10px; }
+.stTextInput input:focus, .stTextArea textarea:focus{ border-color:var(--hg-primary); box-shadow:0 0 0 3px rgba(99,102,241,.15); }
+
+/* ---- alerts ---- */
+div[data-testid="stAlert"]{ border-radius:12px; border-left-width:4px; }
+
+/* ---- sidebar ---- */
+section[data-testid="stSidebar"]{ background:linear-gradient(180deg,#faf9ff 0%,#f3f1fb 100%); border-right:1px solid var(--hg-line); }
+
+/* ---- sidebar pipeline stat panel ---- */
+.hg-side-card{ background:#fff; border:1px solid var(--hg-line); border-radius:14px; padding:13px 15px; box-shadow:0 1px 3px rgba(16,24,40,.05); }
+.hg-side-total{ font-size:.7rem; font-weight:700; color:var(--hg-muted); text-transform:uppercase; letter-spacing:.06em; }
+.hg-side-total .n{ display:block; font-size:2rem; font-weight:800; color:var(--hg-primary); line-height:1.05; margin:2px 0 6px; }
+.hg-side-row{ display:flex; align-items:center; gap:8px; padding:7px 0; border-top:1px solid var(--hg-line); font-size:.86rem; }
+.hg-side-row .dot{ width:9px; height:9px; border-radius:50%; flex-shrink:0; }
+.hg-side-row .lbl{ color:var(--hg-ink); font-weight:500; }
+.hg-side-row .val{ margin-left:auto; font-weight:800; color:var(--hg-ink); font-variant-numeric:tabular-nums; }
+
+/* ---- sidebar follow-ups-due card ---- */
+.hg-fu-head{ font-size:.86rem; font-weight:600; color:var(--hg-ink); margin-bottom:4px; }
+.hg-fu-count{ display:inline-block; min-width:20px; text-align:center; background:#fef3c7; color:#92400e; font-weight:800; border-radius:999px; padding:1px 7px; font-size:.78rem; margin-right:5px; }
+.hg-fu-row{ display:flex; align-items:center; gap:8px; padding:6px 0; border-top:1px solid var(--hg-line); font-size:.84rem; }
+.hg-fu-row .nm{ color:var(--hg-ink); font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.hg-fu-row .fu{ margin-left:auto; flex-shrink:0; background:var(--hg-soft); color:var(--hg-primary); font-weight:700; font-size:.72rem; border-radius:999px; padding:1px 8px; border:1px solid var(--hg-line); }
+.hg-fu-more{ font-size:.78rem; color:var(--hg-muted); font-weight:600; padding-top:7px; border-top:1px solid var(--hg-line); margin-top:2px; }
+
+/* ---- status badges (use with unsafe_allow_html) ---- */
+.hg-badge{ display:inline-block; padding:.15rem .6rem; border-radius:999px; font-size:.72rem; font-weight:700; }
+.hg-badge.ok{ background:#dcfce7; color:#166534; }
+.hg-badge.warn{ background:#fef3c7; color:#92400e; }
+.hg-badge.bad{ background:#fee2e2; color:#991b1b; }
+.hg-badge.info{ background:#e0e7ff; color:#3730a3; }
+
+/* ---- tables + misc ---- */
+thead tr th{ background:var(--hg-soft) !important; font-weight:700 !important; color:var(--hg-ink) !important; }
+hr{ margin:1rem 0; border-color:var(--hg-line); }
+.step-done{ border-left:4px solid #10b981 !important; background:#ecfdf5 !important; }
 </style>
 """, unsafe_allow_html=True)
+
+
+def page_header(title: str, subtitle: str = ""):
+    """A lighter, consistent header for the secondary tabs — gradient accent bar
+    + title + optional subtitle. Keeps the big gradient hero reserved for the
+    wizard so the app has a clear visual hierarchy."""
+    sub = f'<div class="s">{subtitle}</div>' if subtitle else ""
+    st.markdown(f'<div class="hg-phead"><div class="t">{title}</div>{sub}</div>',
+                unsafe_allow_html=True)
+
+
+# ── Static login gate ─────────────────────────────────────────────────────────
+# Credentials are read from Streamlit secrets / env vars when present, and fall
+# back to the built-in defaults otherwise. To override securely (recommended for
+# a public repo), set APP_LOGIN_EMAIL and APP_LOGIN_PASSWORD in your secrets.
+def _check_credentials(email: str, password: str) -> bool:
+    expected_email = _secret("APP_LOGIN_EMAIL", "devraj@adityasharma.ai")
+    expected_password = _secret("APP_LOGIN_PASSWORD", "DEV@12#$")
+    # Constant-time comparison to avoid leaking length/timing information.
+    email_ok = hmac.compare_digest(email.strip().lower(), expected_email.strip().lower())
+    password_ok = hmac.compare_digest(password, expected_password)
+    return email_ok and password_ok
+
+
+# Opaque token kept in the URL query string so a refresh doesn't log the user
+# out (Streamlit clears st.session_state on every full page reload). It's an
+# HMAC of the credentials, so it can't be forged without knowing them and
+# reveals nothing about the password.
+_AUTH_PARAM = "s"
+
+
+def _auth_token() -> str:
+    secret = (_secret("APP_LOGIN_EMAIL", "devraj@adityasharma.ai") + ":" +
+              _secret("APP_LOGIN_PASSWORD", "DEV@12#$"))
+    return hmac.new(secret.encode(), b"hg-auth-v1", hashlib.sha256).hexdigest()
+
+
+def require_login():
+    """Block the app behind a simple email/password gate. Call before rendering UI.
+    Login persists across page refreshes via a signed token in the URL query
+    params (no browser component, so it can't interfere with long operations)."""
+    token = _auth_token()
+
+    # Restore the session from the URL token after a refresh.
+    if not st.session_state.get("authenticated"):
+        if st.query_params.get(_AUTH_PARAM) == token:
+            st.session_state.authenticated = True
+
+    if st.session_state.get("authenticated"):
+        # Logged in — offer a logout control in the sidebar.
+        with st.sidebar:
+            if st.button("🔓 Log out", use_container_width=True):
+                st.session_state.authenticated = False
+                try:
+                    del st.query_params[_AUTH_PARAM]
+                except Exception:
+                    st.query_params.clear()
+                st.rerun()
+        return
+
+    # Not logged in — render a centered login card and stop the rest of the app.
+    st.markdown(
+        """
+        <div style='text-align:center; margin-top:3.5rem; margin-bottom:1.2rem;'>
+          <div style='width:74px; height:74px; margin:0 auto; border-radius:20px;
+                      display:flex; align-items:center; justify-content:center; font-size:2.3rem;
+                      background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);
+                      box-shadow:0 12px 28px -10px rgba(102,126,234,.7);'>🎯</div>
+          <h1 style='margin:0.9rem 0 0.2rem;'>HireGen Outreach Agent</h1>
+          <p style='color:#6b7280; font-size:1rem; margin:0;'>Sign in to continue.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    _, mid, _ = st.columns([1, 2, 1])
+    with mid:
+        with st.form("login_form"):
+            email = st.text_input("Email", placeholder="you@example.com")
+            password = st.text_input("Password", type="password", placeholder="••••••••")
+            submitted = st.form_submit_button("Log in", type="primary", use_container_width=True)
+        if submitted:
+            if _check_credentials(email, password):
+                st.session_state.authenticated = True
+                # Persist across refreshes via a signed URL token.
+                st.query_params[_AUTH_PARAM] = token
+                st.rerun()
+            else:
+                st.error("❌ Invalid email or password.")
+    st.stop()
+
+
+require_login()
+
+
+# ── Sidebar: live Pacific Time clock (display-only iframe; ticks every second) ──
+with st.sidebar:
+    components.html(
+        """
+        <div style="font-family:'Inter',system-ui,sans-serif; text-align:center;
+                    background:#ffffff; border:1px solid #ede9fe; border-radius:12px;
+                    padding:0.7rem 0.5rem; margin-bottom:0.3rem;">
+          <div style="font-size:0.68rem; color:#6b7280; font-weight:700;
+                      text-transform:uppercase; letter-spacing:0.06em;">🕐 Pacific Time</div>
+          <div id="ptt" style="font-size:1.5rem; font-weight:800; color:#4f46e5; margin:0.15rem 0;">–</div>
+          <div id="ptw" style="font-size:0.72rem; font-weight:600;">&nbsp;</div>
+        </div>
+        <script>
+          function updClock() {
+            const now = new Date();
+            const opts = {timeZone:'America/Los_Angeles'};
+            const t = now.toLocaleTimeString('en-US', {...opts, hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:true});
+            const d = now.toLocaleDateString('en-US', {...opts, weekday:'short', month:'short', day:'numeric'});
+            let h = parseInt(now.toLocaleString('en-US', {...opts, hour:'numeric', hour12:false})) % 24;
+            const day = now.toLocaleDateString('en-US', {...opts, weekday:'short'});
+            const weekday = !['Sat','Sun'].includes(day);
+            const open = weekday && h >= 8 && h < 18;
+            document.getElementById('ptt').textContent = t;
+            const w = document.getElementById('ptw');
+            w.textContent = d + ' · ' + (open ? '🟢 Sending window' : '🌙 Outside window');
+            w.style.color = open ? '#198754' : '#9ca3af';
+          }
+          updClock(); setInterval(updClock, 1000);
+        </script>
+        """,
+        height=110,
+    )
 
 
 @st.cache_resource
@@ -80,6 +361,22 @@ def get_first_name(contact_name: str) -> str | None:
     return parts[0] if parts else None
 
 
+def _next_send_slot(dt_utc):
+    """Earliest datetime >= dt_utc inside the 8am–6pm PT weekday send window, so
+    scheduled times match when emails actually go out (no more 6am 'pending')."""
+    pt = dt_utc.astimezone(PACIFIC)
+    for _ in range(14):  # safety bound (roll at most ~2 weeks forward)
+        if pt.weekday() >= 5:                 # Sat/Sun → next day 8am
+            pt = (pt + timedelta(days=1)).replace(hour=8, minute=0, second=0, microsecond=0)
+        elif pt.hour < 8:                     # before window → 8am same day
+            pt = pt.replace(hour=8, minute=0, second=0, microsecond=0)
+        elif pt.hour >= 18:                   # after window → next day 8am
+            pt = (pt + timedelta(days=1)).replace(hour=8, minute=0, second=0, microsecond=0)
+        else:
+            break
+    return pt.astimezone(timezone.utc)
+
+
 # ── Session state initialisation ──────────────────────────────────────────────
 for key, default in {
     "step": 1,
@@ -103,27 +400,63 @@ for key, default in {
         st.session_state[key] = default
 
 # ── Top-level tabs ─────────────────────────────────────────────────────────────
-tab_wizard, tab_history, tab_layoffs = st.tabs(["🚀 Outreach Wizard", "📋 History", "🏷️ Layoffs"])
+tab_wizard, tab_approval, tab_history, tab_queue, tab_sent, tab_analytics = st.tabs(
+    ["🚀 Outreach Wizard", "✅ Approvals", "📋 History", "📬 Email Queue", "📤 Sent Emails", "📊 Analytics"]
+)
+
+# Who receives the daily "batch awaiting approval" email.
+APPROVER_EMAIL = _secret("APPROVER_EMAIL", "devrajsolanki33@gmail.com")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 1 — OUTREACH WIZARD
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_wizard:
-    st.title("🎯 HireGen Outreach Agent")
-    st.caption("Human-in-the-loop outreach workflow | susan@hiregen.co")
+    st.markdown(
+        """
+        <div class="hg-hero">
+          <div class="t">🎯 HireGen Outreach Agent</div>
+          <div class="s">Human-in-the-loop outreach — discover, review, and send, all in one flow.</div>
+          <span class="chip">✉️ susan@hiregen.co</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    with st.expander("❓ How this works — read me first", expanded=False):
+        st.markdown(
+            """
+            This tool finds companies that are hiring, finds a contact at each, and emails them — with your review at every step.
+
+            **The 4 steps:**
+            1. **🔍 Discover Jobs** — pick roles + locations, then search job boards for companies hiring right now.
+            2. **🧹 Dedup Review** — automatically removes existing clients and anyone contacted in the last 30 days.
+            3. **✉️ Email Template** — edit the intro + follow-up emails and choose how many companies to contact.
+            4. **📇 Contacts & Send** — finds a real contact + email for each company, then schedules the emails.
+
+            Scheduled emails are sent automatically during **8am–6pm PT**. Track everything in the **📋 History** and **📬 Email Queue** tabs.
+            """
+        )
+
     st.divider()
 
-    # Progress bar
-    steps = ["1. Discover Jobs", "2. Dedup Review", "3. Email Template", "4. Contacts & Send"]
-    cols = st.columns(4)
-    for i, (col, label) in enumerate(zip(cols, steps), start=1):
-        if i < st.session_state.step:
-            col.success(f"✅ {label}")
-        elif i == st.session_state.step:
-            col.info(f"▶️ {label}")
-        else:
-            col.write(f"⬜ {label}")
+    # Show a success toast queued by the previous action (survives the rerun).
+    if st.session_state.get("_flash"):
+        st.toast(st.session_state.pop("_flash"), icon="✅")
+
+    # Visual stepper
+    steps = ["Discover Jobs", "Dedup Review", "Email Template", "Contacts & Send"]
+    cur = st.session_state.step
+    step_html = '<div class="hg-steps">'
+    for i, label in enumerate(steps, start=1):
+        cls = "done" if i < cur else "active" if i == cur else ""
+        num = "✓" if i < cur else str(i)
+        step_html += (
+            f'<div class="hg-step {cls}"><div class="num">{num}</div>'
+            f'<div class="lbl">{label}</div></div>'
+        )
+    step_html += "</div>"
+    st.markdown(step_html, unsafe_allow_html=True)
 
     st.divider()
 
@@ -152,13 +485,14 @@ with tab_wizard:
         if st.session_state.discovered_jobs is None:
             if st.button("🔍 Run Job Discovery Now", type="primary", use_container_width=True,
                          disabled=not selected_roles or not selected_locations):
-                with st.spinner(f"Searching {len(selected_roles) * len(selected_locations)} combinations..."):
+                with st.spinner(f"🔍 Searching job boards across {len(selected_roles) * len(selected_locations)} combinations… this can take up to a minute."):
                     jobs = discover_jobs(roles=selected_roles, locations=selected_locations)
                     st.session_state.discovered_jobs = jobs
                     # Clear all downstream state so Step 4 always reruns fresh
                     st.session_state.approved_after_dedup = None
                     st.session_state.enriched_leads = None
                     st.session_state.final_leads = None
+                st.session_state["_flash"] = f"Found {len(jobs)} companies hiring"
                 st.rerun()
         else:
             jobs = st.session_state.discovered_jobs
@@ -288,6 +622,7 @@ with tab_wizard:
                                   type="primary", use_container_width=True):
                 st.session_state.approved_after_dedup = kept
                 st.session_state.step = 3
+                st.session_state["_flash"] = f"{len(kept)} companies confirmed — set up your emails"
                 st.rerun()
 
     # ── STEP 3: Email Template ────────────────────────────────────────────────
@@ -329,9 +664,17 @@ with tab_wizard:
         ) or st.session_state.email_template_body
 
         with st.expander("👁️ Preview intro email"):
+            # Sample values for every placeholder the templates support, so the
+            # preview shows real personalization (role, source, specialty) instead
+            # of literal {specialty} tokens.
+            _sample = {
+                "first_name": "Sarah", "company": "Acme Corp", "company_pos": "Acme Corp's",
+                "role": "Full Stack Developer", "short_role": "Full Stack Developer",
+                "specialty": "full-stack", "source_phrase": " on LinkedIn",
+            }
             try:
-                preview_subject = new_subject.format(first_name="Sarah", company="Acme Corp", role="Full Stack Developer")
-                preview_body = new_body.replace("{first_name}", "Sarah").replace("{company}", "Acme Corp").replace("{role}", "Full Stack Developer")
+                preview_subject = new_subject.format(**_sample)
+                preview_body = new_body.format(**_sample)
                 st.markdown(f"**Subject:** {preview_subject}")
                 st.markdown("---")
                 st.markdown(preview_body, unsafe_allow_html=True)
@@ -352,7 +695,7 @@ with tab_wizard:
             }
 
         followup_updates = {}
-        for i in range(1, 6):
+        for i in range(1, 3):
             key = f"followup_{i}"
             tpl = st.session_state.followup_templates.get(key, EMAIL_TEMPLATES.get(key, {}))
             with st.expander(f"Follow-up #{i} — sent {i * 3} days after intro"):
@@ -405,6 +748,7 @@ with tab_wizard:
         else:
             if st.session_state.enriched_leads is None:
                 limit = min(len(companies), st.session_state.get("email_limit", DAILY_EMAIL_LIMIT))
+                st.info(f"Finding contacts for **{limit} companies** via LinkedIn + Wiza. This takes 10–20 minutes. Please wait...")
 
                 # Inject secrets into env vars so contact_finder can read them reliably
                 os.environ["SERPAPI_KEY"]        = _secret("SERPAPI_KEY", "")
@@ -413,47 +757,129 @@ with tab_wizard:
                 os.environ["GOOGLE_CSE_ID"]      = _secret("GOOGLE_CSE_ID", "")
 
                 from agent.contact_finder import (
-                    find_linkedin_url, start_wiza_reveal, poll_wiza_reveal, TITLE_PRIORITY,
+                    find_linkedin_url, start_wiza_reveal, poll_wiza_reveal,
+                    TITLE_PRIORITY, _mask, serpapi_account_info, _find_linkedin_via_serpapi,
                 )
 
-                st.info(f"🔎 Finding contacts for **{limit} companies** via LinkedIn + Wiza. "
-                        f"This can take 10–20 minutes — keep this tab open.")
+                # ── Diagnostics: keys, quota, and a live LinkedIn test ──────────
+                with st.expander("🛠 Contact-lookup diagnostics (technical — open only if lookups fail)", expanded=False):
+                    st.markdown("**1) API keys detected (cloud secrets / env):**")
+                    st.write(f"- SerpAPI: `{_mask(os.environ.get('SERPAPI_KEY',''))}`")
+                    st.write(f"- Wiza: `{_mask(os.environ.get('WIZA_API_KEY',''))}`")
+                    st.write(f"- Google CSE key: `{_mask(os.environ.get('GOOGLE_CSE_API_KEY',''))}`")
+                    st.write(f"- Google CSE id: `{_mask(os.environ.get('GOOGLE_CSE_ID',''))}`")
 
-                progress = st.progress(0.0, text=f"Starting… (0/{limit})")
+                    if not os.environ.get("SERPAPI_KEY") and not os.environ.get("GOOGLE_CSE_API_KEY"):
+                        st.error("❌ No LinkedIn search provider configured. Add **SERPAPI_KEY** "
+                                 "(and/or Google CSE keys) in your Streamlit Cloud app → Settings → Secrets, "
+                                 "then reboot the app. Without this, no contacts can be found.")
+                    if not os.environ.get("WIZA_API_KEY"):
+                        st.error("❌ **WIZA_API_KEY** missing — even if a LinkedIn profile is found, "
+                                 "the email cannot be revealed. Add it in Settings → Secrets.")
+
+                    st.markdown("**2) SerpAPI account quota:**")
+                    _acct = serpapi_account_info()
+                    if "error" in _acct:
+                        st.warning(f"Could not read SerpAPI account: `{_acct['error']}`")
+                    else:
+                        _left = _acct.get("total_searches_left", _acct.get("plan_searches_left", "?"))
+                        _used = _acct.get("this_month_usage", "?")
+                        st.write(f"- Searches left this month: **{_left}**  |  used: {_used}")
+                        if isinstance(_left, int) and _left <= 0:
+                            st.error("❌ SerpAPI quota is exhausted — this is why LinkedIn search returns nothing. "
+                                     "Upgrade the plan or configure Google CSE as a fallback.")
+
+                    st.markdown("**3) Live LinkedIn search test (first company):**")
+                    _test_company = companies[0]["company_name"] if companies else "Stripe"
+                    st.write(f"Testing: **{_test_company}** / *Head of Talent*")
+                    _diag_lines = []
+                    _u = _find_linkedin_via_serpapi(
+                        f'site:linkedin.com "Head of Talent" "{_test_company}"',
+                        log=lambda m: _diag_lines.append(m),
+                    )
+                    for _l in _diag_lines:
+                        st.write(_l)
+                    st.write(f"→ Result: `{_u or 'no LinkedIn URL found'}`")
+
+                progress = st.progress(0)
+                status_text = st.empty()
+                log_area = st.expander("🔍 Live lookup log (click to expand)", expanded=True)
+                # A single placeholder we overwrite each time. Calling .markdown()
+                # directly on the expander APPENDS a new element per call, which
+                # re-prints the whole log tail over and over (looks like duplicates).
+                log_placeholder = log_area.empty()
+                log_lines = []
                 results = []
 
-                with st.spinner("Looking up contacts…"):
-                    for i, job in enumerate(companies[:limit]):
-                        company = job["company_name"]
-                        progress.progress(i / limit, text=f"Looking up {company}… ({i + 1}/{limit})")
-                        contact = None
-                        try:
-                            linkedin_url = None
-                            for title in TITLE_PRIORITY:
-                                linkedin_url = find_linkedin_url(company, title)
-                                if linkedin_url:
-                                    break
-                            if linkedin_url:
-                                reveal_id = start_wiza_reveal(linkedin_url)
-                                if reveal_id:
-                                    contact = poll_wiza_reveal(reveal_id, max_wait=420)
-                        except Exception as e:
-                            st.warning(f"Error looking up {company}: {e}")
-                        if contact:
-                            job.update(contact)
-                        else:
-                            job["contact_email"] = None
-                        results.append(job)
-                        progress.progress((i + 1) / limit, text=f"Looked up {company} ({i + 1}/{limit})")
+                def add_log(msg):
+                    log_lines.append(msg)
+                    log_placeholder.markdown("\n\n".join(log_lines[-30:]))
 
-                progress.progress(1.0, text="✅ Contact lookup complete!")
+                for i, job in enumerate(companies[:limit]):
+                    company = job["company_name"]
+                    status_text.text(f"Looking up {company}... ({i+1}/{limit})")
+                    contact = None
+                    add_log(f"**{company}** — searching LinkedIn via SerpAPI (Google)...")
+                    try:
+                        linkedin_url = None
+                        for title in TITLE_PRIORITY:
+                            add_log(f"  🔍 Trying: *{title}*")
+                            linkedin_url = find_linkedin_url(company, title, log=add_log)
+                            if linkedin_url:
+                                add_log(f"  ✅ LinkedIn found ({title}): `{linkedin_url}`")
+                                break
+                        if not linkedin_url:
+                            add_log(f"  ❌ No LinkedIn URL found for any title — skipping")
+                        else:
+                            add_log(f"  ⏳ Submitting to Wiza...")
+                            reveal_id = start_wiza_reveal(linkedin_url, log=add_log)
+                            if not reveal_id:
+                                add_log(f"  ❌ Wiza reveal failed (bad key or quota?)")
+                            else:
+                                add_log(f"  ⏳ Polling Wiza (id: {reveal_id})...")
+                                contact = poll_wiza_reveal(reveal_id, max_wait=420)
+                                if contact:
+                                    add_log(f"  ✅ Got email: {contact.get('contact_email')} ({contact.get('contact_name')})")
+                                else:
+                                    add_log(f"  ❌ Wiza returned no valid work email")
+                    except Exception as e:
+                        add_log(f"  ❌ Exception: {e}")
+                        st.warning(f"Error for {company}: {e}")
+                    if contact:
+                        # Apply the same gates the CLI path uses — the dashboard
+                        # skipped these, which let malformed / wrong-company emails
+                        # through (e.g. a personal gmail on a company lead).
+                        from agent.email_validation import validate_email
+                        from agent.contact_finder import email_matches_company
+                        em = (contact.get("contact_email") or "")
+                        _ok, _reason = validate_email(em)
+                        if not _ok:
+                            add_log(f"  🚫 Rejected email ({_reason}): {em}")
+                            job["contact_email"] = None
+                        elif not email_matches_company(em, company):
+                            add_log(f"  🚫 Rejected — {em} domain doesn't match {company}")
+                            job["contact_email"] = None
+                        else:
+                            job.update(contact)
+                    else:
+                        job["contact_email"] = None
+                    results.append(job)
+                    progress.progress((i + 1) / limit)
+
+                status_text.text("✅ Contact lookup complete!")
                 st.session_state.enriched_leads = results
+                _found_ct = len([j for j in results if j.get("contact_email")])
+                st.toast(f"Contact lookup complete — {_found_ct} contact(s) found", icon="✅")
 
             leads = st.session_state.enriched_leads
             found = [l for l in leads if l.get("contact_email")]
             not_found = [l for l in leads if not l.get("contact_email")]
 
-            st.success(f"✅ Found contacts for **{len(found)}** companies. ❌ No contact for **{len(not_found)}** (will be skipped).")
+            mc1, mc2, mc3 = st.columns(3)
+            mc1.metric("✅ Contacts found", len(found))
+            mc2.metric("❌ Skipped (no contact)", len(not_found))
+            mc3.metric("📇 Companies searched", len(leads))
+            st.caption("Contacts found are ready to email. Companies with no contact are skipped automatically.")
 
             if not_found:
                 with st.expander(f"❌ {len(not_found)} companies skipped (no contact found)"):
@@ -480,7 +906,8 @@ with tab_wizard:
 
                 with col1:
                     # Default unchecked if no name
-                    send_flags[i] = st.checkbox("", value=has_name, key=f"send_{i}")
+                    send_flags[i] = st.checkbox("Send", value=has_name, key=f"send_{i}",
+                                                label_visibility="collapsed")
                 with col2:
                     st.write(f"**{lead['company_name']}**")
                 with col3:
@@ -521,6 +948,13 @@ with tab_wizard:
                     help="Auto-generated from date & time. Edit to give this campaign a custom name.",
                     key="campaign_name_input"
                 )
+                hold_for_approval = st.checkbox(
+                    "🔒 Require my approval before sending",
+                    value=True,
+                    help="Emails wait in the Approvals tab until you approve them. "
+                         f"A reminder is emailed to {APPROVER_EMAIL}.",
+                    key="hold_for_approval",
+                )
 
             col_a, col_b, col_c = st.columns(3)
             with col_a:
@@ -539,18 +973,23 @@ with tab_wizard:
                         supabase = get_supabase()
                         now = datetime.now(timezone.utc)
                         now_pt = now.astimezone(PACIFIC)
-                        delay_seconds = 0
                         schedule_preview = []
 
                         # Use user-edited name or fall back to auto-generated
                         campaign_id = str(uuid.uuid4())
                         campaign_name = st.session_state.get("campaign_name_input") or f"Campaign — {now_pt.strftime('%b %d, %Y %I:%M %p PT')}"
 
+                        # First send lands inside the 8am–6pm PT window; each
+                        # subsequent one is 1–3 min later, rolling to the next
+                        # window if it would spill past 6pm.
+                        hold = st.session_state.get("hold_for_approval", True)
+                        queue_status = "awaiting_approval" if hold else "pending"
+                        send_at = _next_send_slot(now)
+                        first_send_at = send_at
                         for i, lead in enumerate(approved_leads):
                             if i > 0:
                                 gap = random.randint(60, 180)
-                                delay_seconds += gap
-                            send_at = now + timedelta(seconds=delay_seconds)
+                                send_at = _next_send_slot(send_at + timedelta(seconds=gap))
 
                             lead_id = save_lead(supabase, lead)
                             lead_with_id = {**lead, "lead_id": lead_id}
@@ -559,7 +998,7 @@ with tab_wizard:
                                 "lead_data": lead_with_id,
                                 "email_type": "intro",
                                 "scheduled_for": send_at.isoformat(),
-                                "status": "pending",
+                                "status": queue_status,
                                 "campaign_id": campaign_id,
                                 "campaign_name": campaign_name,
                             }).execute()
@@ -567,7 +1006,7 @@ with tab_wizard:
                             schedule_preview.append({
                                 "name": lead.get("contact_name", "—"),
                                 "company": lead["company_name"],
-                                "send_at": send_at.astimezone(PACIFIC).strftime("%I:%M:%S %p PT"),
+                                "send_at": send_at.astimezone(PACIFIC).strftime("%b %d, %I:%M %p PT"),
                             })
 
                         log_activity(supabase, "agent_run",
@@ -577,9 +1016,25 @@ with tab_wizard:
                         st.session_state.schedule_preview = schedule_preview
                         st.session_state.current_campaign_id = campaign_id
 
-                        total_mins = delay_seconds // 60
-                        st.success(f"🗓️ **{len(approved_leads)} emails scheduled!** Over ~{total_mins} mins with random 1–3 min gaps.")
-                        st.info("⚠️ Make sure the **scheduler is running** (`python3 scheduler.py`) — it sends emails even after you close this app.")
+                        first_pt = first_send_at.astimezone(PACIFIC).strftime("%b %d, %I:%M %p")
+                        last_pt = send_at.astimezone(PACIFIC).strftime("%b %d, %I:%M %p")
+                        st.toast(f"{len(approved_leads)} emails queued!", icon="🎉")
+                        if hold:
+                            # Email the approver so they know a batch is waiting.
+                            try:
+                                send_email(
+                                    APPROVER_EMAIL,
+                                    f"[HireGen] {len(approved_leads)} emails awaiting your approval",
+                                    f"Hi,\n\n{len(approved_leads)} outreach emails are queued and waiting for your approval "
+                                    f"(campaign: {campaign_name}).\n\nOpen the dashboard → Approvals tab to Approve, Reject, "
+                                    f"or leave them for later.\n\nScheduled to send {first_pt}–{last_pt} PT once approved.\n\n— HireGen",
+                                )
+                            except Exception:
+                                pass
+                            st.success(f"🔒 **{len(approved_leads)} emails queued for approval.** Review them in the **✅ Approvals** tab — a reminder was emailed to {APPROVER_EMAIL}.")
+                        else:
+                            st.success(f"🗓️ **{len(approved_leads)} emails scheduled!** First at **{first_pt} PT**, last at **{last_pt} PT** (1–3 min gaps, within 8am–6pm PT).")
+                            st.info("📤 Delivered automatically during the 8am–6pm PT window — you can safely close this tab.")
                         st.balloons()
 
             if st.session_state.send_complete:
@@ -591,7 +1046,7 @@ with tab_wizard:
                         for item in st.session_state.schedule_preview:
                             st.write(f"🕐 **{item['send_at']}** → {item['name']} @ {item['company']}")
 
-                st.warning("Make sure `python3 scheduler.py` is running in your terminal to deliver the emails.")
+                st.caption("📤 Delivered automatically by the background worker (scheduler) — no further action needed.")
 
                 if st.button("🔁 Start a New Outreach Run", type="primary", use_container_width=True):
                     for key in ["discovered_jobs", "approved_jobs", "dedup_removed", "dedup_kept",
@@ -604,18 +1059,38 @@ with tab_wizard:
 
     # ── Sidebar ───────────────────────────────────────────────────────────────
     with st.sidebar:
-        st.header("📊 Pipeline Overview")
+        st.subheader("📊 Pipeline Overview")
         try:
             supabase = get_supabase()
             leads = supabase.table("leads").select("status").execute().data
             by_status = {}
             for l in leads:
-                s = l["status"]
+                s = l["status"] or "new"
                 by_status[s] = by_status.get(s, 0) + 1
 
-            st.metric("Total Leads", len(leads))
-            for status, count in by_status.items():
-                st.write(f"**{status.title()}:** {count}")
+            # One clean stat panel: big total + colour-coded status rows with
+            # right-aligned counts (replaces the plain "New: 40" text lines).
+            STATUS_STYLE = {
+                "new":          ("#6366f1", "New"),
+                "emailed":      ("#3b82f6", "Emailed"),
+                "following_up": ("#f59e0b", "Following up"),
+                "replied":      ("#10b981", "Replied"),
+                "bounced":      ("#ef4444", "Bounced"),
+                "closed":       ("#9ca3af", "Closed"),
+                "skipped":      ("#9ca3af", "Skipped"),
+            }
+            _order = ["new", "emailed", "following_up", "replied", "bounced", "closed", "skipped"]
+            _ordered = [s for s in _order if s in by_status] + [s for s in by_status if s not in _order]
+            rows_html = ""
+            for s in _ordered:
+                color, label = STATUS_STYLE.get(s, ("#9ca3af", s.replace("_", " ").title()))
+                rows_html += (f'<div class="hg-side-row"><span class="dot" style="background:{color}"></span>'
+                              f'<span class="lbl">{label}</span><span class="val">{by_status[s]}</span></div>')
+            st.markdown(
+                f'<div class="hg-side-card"><div class="hg-side-total">Total Leads'
+                f'<span class="n">{len(leads)}</span></div>{rows_html}</div>',
+                unsafe_allow_html=True,
+            )
 
             st.divider()
             st.subheader("⏰ Follow-ups Due")
@@ -624,24 +1099,107 @@ with tab_wizard:
                 .in_("status", ["emailed", "following_up"]) \
                 .lte("next_followup_date", today).execute().data
             if due:
-                st.warning(f"{len(due)} follow-up(s) due today!")
-                for d in due[:5]:
-                    st.write(f"- {d['company_name']} (follow-up #{d['followup_count']+1})")
-                if st.button("Send Today's Follow-ups"):
+                rows_html = ""
+                for d in due[:6]:
+                    nm = d.get("company_name") or "—"
+                    fu = (d.get("followup_count") or 0) + 1
+                    rows_html += (f'<div class="hg-fu-row"><span class="nm" title="{nm}">{nm}</span>'
+                                  f'<span class="fu">#{fu}</span></div>')
+                more_html = f'<div class="hg-fu-more">+{len(due) - 6} more due</div>' if len(due) > 6 else ""
+                st.markdown(
+                    f'<div class="hg-side-card"><div class="hg-fu-head">'
+                    f'<span class="hg-fu-count">{len(due)}</span>due today</div>'
+                    f'{rows_html}{more_html}</div>',
+                    unsafe_allow_html=True,
+                )
+                if st.button("📤 Send Today's Follow-ups", use_container_width=True):
                     from main import send_followups
                     count = send_followups(get_supabase(), 0)
                     st.success(f"Sent {count} follow-ups!")
             else:
-                st.success("No follow-ups due today.")
+                st.success("✅ No follow-ups due today.")
         except Exception:
             st.info("No data yet.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB — APPROVALS (human-in-the-loop gate before sending)
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_approval:
+    page_header("✅ Approvals", "Review, approve, or reject queued outreach before anything sends.")
+    st.caption("Review emails before they send. Approve to release them, Reject to cancel, "
+               "or leave them for later. Nothing here sends until you approve it.")
+
+    try:
+        supabase = get_supabase()
+        waiting = supabase.table("email_queue").select("*") \
+            .eq("status", "awaiting_approval").order("scheduled_for").execute().data or []
+
+        st.metric("🔒 Awaiting your approval", len(waiting))
+
+        if not waiting:
+            st.success("🎉 Nothing waiting — you're all caught up.")
+        else:
+            # Group by campaign for bulk actions
+            campaigns = {}
+            for w in waiting:
+                campaigns.setdefault(w.get("campaign_name", "—"), []).append(w)
+
+            b1, b2 = st.columns(2)
+            if b1.button(f"✅ Approve ALL {len(waiting)}", type="primary", use_container_width=True):
+                for w in waiting:
+                    supabase.table("email_queue").update({"status": "pending"}).eq("id", w["id"]).execute()
+                st.toast(f"Approved {len(waiting)} — they'll send on schedule.", icon="✅")
+                st.rerun()
+            if b2.button(f"❌ Reject ALL {len(waiting)}", use_container_width=True):
+                for w in waiting:
+                    supabase.table("email_queue").update({"status": "cancelled"}).eq("id", w["id"]).execute()
+                st.toast(f"Rejected {len(waiting)}.", icon="🗑️")
+                st.rerun()
+
+            st.divider()
+
+            for camp, items in campaigns.items():
+                st.subheader(f"📁 {camp}  ·  {len(items)} email(s)")
+                for w in items:
+                    lead = w.get("lead_data", {}) or {}
+                    try:
+                        subj, body = render_template(w.get("email_type", "intro"), lead)
+                    except Exception:
+                        subj, body = "—", "—"
+                    try:
+                        sched = datetime.fromisoformat(w["scheduled_for"].replace("Z", "+00:00")) \
+                            .astimezone(PACIFIC).strftime("%b %d, %I:%M %p PT")
+                    except Exception:
+                        sched = "—"
+
+                    with st.container():
+                        c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
+                        c1.markdown(f"**{lead.get('company_name','—')}** → {lead.get('contact_name') or lead.get('contact_email','—')}  \n"
+                                    f"<span style='color:#6b7280;font-size:0.85rem'>{lead.get('contact_email','')} · sends {sched}</span>",
+                                    unsafe_allow_html=True)
+                        if c2.button("✅ Approve", key=f"appr_{w['id']}", use_container_width=True):
+                            supabase.table("email_queue").update({"status": "pending"}).eq("id", w["id"]).execute()
+                            st.rerun()
+                        if c3.button("❌ Reject", key=f"rej_{w['id']}", use_container_width=True):
+                            supabase.table("email_queue").update({"status": "cancelled"}).eq("id", w["id"]).execute()
+                            st.rerun()
+                        if c4.button("🕒 Later", key=f"later_{w['id']}", use_container_width=True,
+                                     help="Leave it awaiting approval for now"):
+                            st.toast("Left for later.", icon="🕒")
+                        with st.expander(f"✉️ Preview — {subj}"):
+                            st.text(body)
+                    st.divider()
+    except Exception as e:
+        st.error(f"Could not load approvals: {e}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 2 — PAST CAMPAIGNS
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_history:
-    st.title("📋 Past Campaigns")
+    page_header("📋 History", "Past campaigns, delivery stats, and what's still in the queue.")
+    st.caption("Every outreach run, its sent & pending emails, and reply tracking | susan@hiregen.co")
 
     if st.button("🔄 Refresh", key="refresh_history"):
         st.rerun()
@@ -672,7 +1230,7 @@ with tab_history:
         c1, c2, c3, c4, c5, c6 = st.columns(6)
         c1.metric("🏢 Companies", total_companies)
         c2.metric("👤 People", total_people)
-        c3.metric("📧 Intros Sent", intro_emails)
+        c3.metric("📧 Intros", intro_emails)
         c4.metric("🔁 Follow-ups", followup_emails)
         c5.metric("✅ Delivered", success_emails)
         c6.metric("💬 Replied", replied)
@@ -704,6 +1262,10 @@ with tab_history:
                         time_str = sched_dt.strftime("%I:%M %p PT")
                     except Exception:
                         time_str = "—"
+                    try:
+                        subj, body = render_template(item.get("email_type", "intro"), lead)
+                    except Exception:
+                        subj, body = "—", "—"
                     rows.append({
                         "Scheduled For": time_str,
                         "Campaign": campaign,
@@ -711,7 +1273,10 @@ with tab_history:
                         "Contact": lead.get("contact_name", "—"),
                         "Email": lead.get("contact_email", "—"),
                         "Type": item.get("email_type", "intro").replace("_", " ").title(),
+                        "Subject": subj,
+                        "Message": body,
                     })
+                st.caption("Tip: click a **Subject** or **Message** cell to read the full text.")
                 st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
                 st.divider()
         except Exception:
@@ -780,14 +1345,16 @@ with tab_history:
                     f"🔁 {len(followups)} follow-ups &nbsp;|&nbsp; "
                     f"✅ {success_rate} delivered"
                 ):
-                    mc1, mc2, mc3, mc4, mc5 = st.columns([2, 2, 2, 2, 3])
-                    mc1.metric("People Reached", people_ct)
-                    mc2.metric("Companies", companies_ct)
-                    mc3.metric("Delivered", len(delivered))
-                    mc4.metric("Failed", len(failed))
-                    with mc5:
+                    mc1, mc2, mc3, mc4 = st.columns(4)
+                    mc1.metric("👤 People", people_ct)
+                    mc2.metric("🏢 Companies", companies_ct)
+                    mc3.metric("✅ Delivered", len(delivered))
+                    mc4.metric("❌ Failed", len(failed))
+
+                    # Rename lives in its own control, not crammed into the metric row.
+                    with st.expander("✏️ Rename this campaign"):
                         new_camp_name = st.text_input(
-                            "✏️ Rename Campaign",
+                            "Campaign name",
                             value=camp_name,
                             key=f"rename_{cid}",
                             label_visibility="collapsed",
@@ -803,8 +1370,10 @@ with tab_history:
                                 pass
                     st.markdown("---")
 
-                    # Headers
-                    hdr = st.columns([1.5, 1.8, 2.2, 2.0, 2.2, 2.5, 2.0])
+                    # Shared column widths so the header and every data row line up.
+                    # Company gets real width (was 1.5 → wrapped to "Compan y").
+                    _row_ratios = [2.2, 2.2, 2.6, 2.4, 2.2, 2.4, 0.7]
+                    hdr = st.columns(_row_ratios)
                     for h, t in zip(hdr, ["Company", "Full Name & LinkedIn", "Email", "Emails Sent", "Pending Emails", "Response", "✓"]):
                         h.markdown(f"**{t}**")
                     st.markdown("---")
@@ -844,7 +1413,7 @@ with tab_history:
                            followup_count < 5 and next_followup_date:
                             try:
                                 next_dt = datetime.fromisoformat(next_followup_date).replace(tzinfo=timezone.utc)
-                                for i in range(followup_count + 1, 6):
+                                for i in range(followup_count + 1, 3):
                                     label = EMAIL_TYPE_LABELS.get(f"followup_{i}", f"Follow-up {i}")
                                     days_offset = (i - followup_count - 1) * 3
                                     send_date = next_dt + timedelta(days=days_offset)
@@ -854,7 +1423,7 @@ with tab_history:
 
                         all_status = "✅" if all(e.get("gmail_message_id") for e in emails) else "⚠️"
 
-                        c1, c2, c3, c4, c5, c6, c7 = st.columns([1.5, 1.8, 2.0, 2.2, 2.5, 2.0, 1.0])
+                        c1, c2, c3, c4, c5, c6, c7 = st.columns(_row_ratios)
                         c1.write(f"**{company}**")
                         if linkedin:
                             c2.markdown(f"[{name}]({linkedin}) 🔗")
@@ -896,105 +1465,297 @@ with tab_history:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 3 — LAYOFFS
+# TAB — EMAIL QUEUE MANAGER
 # ══════════════════════════════════════════════════════════════════════════════
-with tab_layoffs:
-    st.title("🏷️ Layoff Tracker")
-    st.caption("US companies that have recently laid off staff — refreshed every few hours by the scheduler.")
+with tab_queue:
+    page_header("📬 Email Queue", "What's scheduled, what's pending, and upcoming follow-ups.")
+    st.caption("Review unsent emails, remove ones you don't want, see upcoming follow-ups, and send a test.")
 
-    top = st.columns([1, 1, 4])
-    with top[0]:
-        if st.button("🔄 Refresh", key="refresh_layoffs"):
-            st.rerun()
-    with top[1]:
-        if st.button("⚡ Scan now", key="scan_layoffs_now", help="Run a discovery scan immediately"):
-            with st.spinner("Scanning WARN + Layoffs.fyi + News..."):
+    supabase = get_supabase()
+
+    # ── Send a test email ─────────────────────────────────────────────────────
+    with st.expander("✉️ Send a test email", expanded=False):
+        st.caption("Sends a one-off email through the configured Gmail account to verify sending works.")
+        test_to = st.text_input("Recipient", value="devraj@hicounselor.com", key="test_email_to")
+
+        # Runtime diagnostics — shows exactly what this service sees.
+        _tok = os.getenv("GMAIL_TOKEN_B64", "")
+        d1, d2 = st.columns(2)
+        d1.caption(f"GMAIL_TOKEN_B64: {'✅ set, len ' + str(len(_tok)) if _tok else '❌ NOT set'}")
+        d2.caption(f"SENDER_EMAIL: {os.getenv('SENDER_EMAIL', '❌ not set')}")
+
+        if st.button("📨 Send test email", type="primary", key="send_test_btn"):
+            if not test_to.strip():
+                st.warning("Enter a recipient email address first.")
+            else:
+                # Send inline so the REAL exception surfaces (send_email() swallows it).
+                import traceback
                 try:
-                    from agent.layoff_filter import run_layoff_scan
-                    new_hits = run_layoff_scan()
-                    st.success(f"Scan complete — {len(new_hits)} new company(ies) found.")
-                except Exception as scan_err:
-                    st.error(f"Scan failed: {scan_err}")
+                    from agent.email_sender import get_gmail_service, build_email
+                    subject = "HireGen — test email ✅"
+                    body = (
+                        "Hi,\n\nThis is a test email from the HireGen Outreach Agent dashboard.\n"
+                        "If you received this, Gmail sending is configured correctly.\n\n— HireGen"
+                    )
+                    service = get_gmail_service()
+                    built = build_email(test_to.strip(), subject, body)
+                    sent = service.users().messages().send(userId="me", body=built["body"]).execute()
+                    st.success(f"✅ Test email sent to {test_to.strip()} (Gmail id: {sent.get('id')}).")
+                except Exception as e:
+                    st.error(f"❌ Send failed: {type(e).__name__}: {e}")
+                    st.caption("Full error detail:")
+                    st.code(traceback.format_exc())
+
+    st.divider()
+
+    # ── Load the queue ────────────────────────────────────────────────────────
+    try:
+        queue = supabase.table("email_queue").select("*").order("scheduled_for").execute().data or []
+    except Exception as e:
+        st.error(f"Could not load the email queue: {e}")
+        queue = []
+
+    pending = [q for q in queue if q.get("status") == "pending"]
+    intros = [q for q in pending if q.get("email_type") == "intro"]
+    followups = [q for q in pending if str(q.get("email_type", "")).startswith("followup")]
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("⏳ Unsent (pending)", len(pending))
+    m2.metric("📧 Intros", len(intros))
+    m3.metric("🔁 Follow-ups queued", len(followups))
+
+    st.divider()
+
+    # ── Unsent emails: filter, bulk delete, per-row delete ────────────────────
+    st.subheader("Unsent emails")
+    choice = st.radio("Show", ["All", "Intros only", "Follow-ups only"],
+                      horizontal=True, key="queue_filter")
+    rows = intros if choice == "Intros only" else followups if choice == "Follow-ups only" else pending
+
+    if not rows:
+        st.info("✅ No unsent emails in the queue.")
+    else:
+        head = st.columns([2, 2, 2.5, 1.5, 1])
+        for h, t in zip(head, ["Scheduled (PT)", "Company", "Contact", "Type", "Delete"]):
+            h.markdown(f"**{t}**")
+        st.divider()
+
+        for item in rows:
+            lead = item.get("lead_data", {}) or {}
+            try:
+                sched = datetime.fromisoformat(item["scheduled_for"].replace("Z", "+00:00")) \
+                    .astimezone(PACIFIC).strftime("%b %d, %I:%M %p")
+            except Exception:
+                sched = "—"
+            c1, c2, c3, c4, c5 = st.columns([2, 2, 2.5, 1.5, 1])
+            c1.write(sched)
+            c2.write(lead.get("company_name", "—"))
+            c3.write(lead.get("contact_name") or lead.get("contact_email", "—"))
+            c4.write(str(item.get("email_type", "intro")).replace("_", " ").title())
+            if c5.button("🗑️", key=f"del_queue_{item['id']}", help="Delete this unsent email"):
+                supabase.table("email_queue").delete().eq("id", item["id"]).execute()
+                st.rerun()
+            # Review the exact subject + message that will be sent
+            with st.expander(f"✉️ Preview message → {lead.get('contact_email', '—')}"):
+                try:
+                    subj, body = render_template(item.get("email_type", "intro"), lead)
+                    st.markdown(f"**To:** {lead.get('contact_name') or '—'} &lt;{lead.get('contact_email', '—')}&gt;  \n**Subject:** {subj}")
+                    st.divider()
+                    st.text(body)
+                except Exception as e:
+                    st.caption(f"Could not render preview: {e}")
+
+        st.divider()
+        if st.button(f"🗑️ Delete all {len(rows)} shown", key="del_all_shown"):
+            for item in rows:
+                supabase.table("email_queue").delete().eq("id", item["id"]).execute()
+            st.success(f"Deleted {len(rows)} unsent email(s).")
+            st.rerun()
+
+    st.divider()
+
+    # ── Upcoming follow-ups (from leads, not yet queued) ──────────────────────
+    st.subheader("🔁 Upcoming follow-ups")
+    st.caption("Leads still due for follow-ups. Stops automatically once they reply (positive/negative) or bounce.")
+    try:
+        today = date.today().isoformat()
+        due = supabase.table("leads").select(
+            "company_name, contact_name, contact_email, followup_count, next_followup_date, status, response_status"
+        ).in_("status", ["emailed", "following_up"]).execute().data or []
+
+        upcoming = [
+            l for l in due
+            if (l.get("followup_count") or 0) < 5
+            and l.get("response_status") not in ("positive", "negative", "bounced")
+            and l.get("next_followup_date")
+        ]
+        upcoming.sort(key=lambda l: l.get("next_followup_date") or "")
+
+        if not upcoming:
+            st.info("No upcoming follow-ups scheduled.")
+        else:
+            rows_fu = []
+            for l in upcoming:
+                next_num = (l.get("followup_count") or 0) + 1
+                rows_fu.append({
+                    "Company": l.get("company_name", "—"),
+                    "Contact": l.get("contact_name") or l.get("contact_email", "—"),
+                    "Next": f"Follow-up #{next_num}",
+                    "Due date": l.get("next_followup_date", "—"),
+                    "Sent so far": l.get("followup_count", 0),
+                })
+            st.dataframe(pd.DataFrame(rows_fu), use_container_width=True, hide_index=True)
+    except Exception as e:
+        st.error(f"Could not load follow-ups: {e}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB — SENT EMAILS
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_sent:
+    page_header("📤 Sent Emails", "A record of every intro and follow-up that has gone out.")
+    st.caption("Every email delivered by the agent — who it went to, the subject, and the full message.")
 
     try:
         supabase = get_supabase()
-        rows = supabase.table("layoffs") \
-            .select("*") \
-            .order("first_seen_at", desc=True) \
-            .limit(2000).execute().data
+        sent_result = supabase.table("emails_sent") \
+            .select("to_email, to_name, subject, body, sent_at, email_type") \
+            .order("sent_at", desc=True) \
+            .limit(300) \
+            .execute()
+        sent_rows = sent_result.data or []
 
-        if not rows:
-            st.info("No layoffs recorded yet. Run the SQL in supabase/layoffs.sql, then click **Scan now** "
-                    "or wait for the scheduler's next scan.")
-        else:
-            df = pd.DataFrame(rows)
+        intros = [r for r in sent_rows if r.get("email_type") == "intro"]
+        followups = [r for r in sent_rows if r.get("email_type") != "intro"]
 
-            # ── Summary metrics ───────────────────────────────────────────────
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("🏢 Companies", df["company_normalized"].nunique())
-            m2.metric("🇺🇸 US-based", int(df["is_us"].sum()) if "is_us" in df else 0)
-            total_affected = int(df["employees_affected"].fillna(0).sum()) if "employees_affected" in df else 0
-            m3.metric("👥 Employees affected", f"{total_affected:,}")
-            m4.metric("📰 Sources", df["source"].nunique())
+        m1, m2, m3 = st.columns(3)
+        m1.metric("📨 Total sent", len(sent_rows))
+        m2.metric("👋 Intros", len(intros))
+        m3.metric("🔁 Follow-ups", len(followups))
 
-            st.divider()
+        st.divider()
 
-            # ── Filters ───────────────────────────────────────────────────────
-            f1, f2, f3, f4 = st.columns(4)
-            with f1:
-                us_only = st.checkbox("US-based only", value=True, key="layoff_us_only")
-            with f2:
-                industries = sorted([i for i in df["industry"].dropna().unique() if i]) if "industry" in df else []
-                pick_industry = st.multiselect("Industry", options=industries, key="layoff_industry")
-            with f3:
-                sources = sorted(df["source"].dropna().unique()) if "source" in df else []
-                pick_source = st.multiselect("Source", options=sources, key="layoff_source")
-            with f4:
-                min_affected = st.number_input("Min. employees affected", min_value=0, value=0, step=50,
-                                               key="layoff_min_affected")
+        f1, f2 = st.columns([1, 2])
+        with f1:
+            sent_type = st.radio("Show", ["All", "Intros only", "Follow-ups only"], key="sent_type_filter")
+        with f2:
+            sent_search = st.text_input("🔎 Search recipient, name, or subject", key="sent_search",
+                                        placeholder="e.g. justin@company.com")
 
-            view = df.copy()
-            if us_only and "is_us" in view:
-                view = view[view["is_us"] == True]  # noqa: E712
-            if pick_industry:
-                view = view[view["industry"].isin(pick_industry)]
-            if pick_source:
-                view = view[view["source"].isin(pick_source)]
-            if min_affected:
-                view = view[view["employees_affected"].fillna(0) >= min_affected]
+        shown = sent_rows
+        if sent_type == "Intros only":
+            shown = intros
+        elif sent_type == "Follow-ups only":
+            shown = followups
+        if sent_search.strip():
+            q = sent_search.strip().lower()
+            shown = [r for r in shown
+                     if q in (r.get("to_email") or "").lower()
+                     or q in (r.get("to_name") or "").lower()
+                     or q in (r.get("subject") or "").lower()]
 
-            display_cols = ["company_name", "industry", "employees_affected", "location",
-                            "country", "layoff_date", "source", "source_url", "first_seen_at"]
-            display_cols = [c for c in display_cols if c in view.columns]
-            view = view[display_cols].rename(columns={
-                "company_name":       "Company",
-                "industry":           "Industry",
-                "employees_affected": "Affected",
-                "location":           "Location",
-                "country":            "Country",
-                "layoff_date":        "Layoff Date",
-                "source":             "Source",
-                "source_url":         "Link",
-                "first_seen_at":      "First Seen",
-            })
+        st.caption(f"Showing {len(shown)} email(s)")
+        if not shown:
+            st.info("📭 No sent emails match. Run a campaign from the Outreach Wizard first.")
 
-            st.caption(f"Showing **{len(view)}** of {len(df)} recorded layoffs.")
-            st.dataframe(
-                view,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Link": st.column_config.LinkColumn("Link", display_text="Open"),
-                },
-            )
+        for r in shown:
+            try:
+                sent_pt = datetime.fromisoformat(str(r["sent_at"]).replace("Z", "+00:00")) \
+                    .astimezone(PACIFIC).strftime("%b %d, %I:%M %p PT")
+            except Exception:
+                sent_pt = str(r.get("sent_at", "—"))
+            type_badge = "👋 Intro" if r.get("email_type") == "intro" else f"🔁 {r.get('email_type', 'follow-up').replace('_', ' ').title()}"
 
-            st.download_button(
-                "⬇️ Download CSV",
-                data=view.to_csv(index=False).encode("utf-8"),
-                file_name="layoffs.csv",
-                mime="text/csv",
-            )
-
+            with st.expander(f"📧 {sent_pt}  ·  {r.get('to_email', '?')}  —  {r.get('subject', '(no subject)')}"):
+                st.markdown(
+                    f"**To:** {r.get('to_name') or '—'} &lt;{r.get('to_email', '?')}&gt;  \n"
+                    f"**Type:** {type_badge}  \n"
+                    f"**Sent:** {sent_pt}  \n"
+                    f"**Subject:** {r.get('subject', '')}"
+                )
+                st.divider()
+                body = r.get("body") or "(empty body)"
+                if "</" in body or "<br" in body or "<p" in body:
+                    st.markdown(body, unsafe_allow_html=True)
+                else:
+                    st.text(body)
     except Exception as e:
-        st.error(f"Could not load layoffs: {e}")
-        st.info("Make sure you've created the table with supabase/layoffs.sql.")
+        st.error(f"Could not load sent emails: {e}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB — ANALYTICS
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_analytics:
+    page_header("📊 Analytics", "Response rates and pipeline health across all outreach.")
+    st.caption("How the outreach is performing — sends, replies, and opt-outs.")
+
+    try:
+        supabase = get_supabase()
+
+        total_sent = supabase.table("emails_sent").select("id", count="exact").execute().count or 0
+        leads_all = supabase.table("leads").select("status, response_status").execute().data or []
+        try:
+            unsub_count = supabase.table("unsubscribes").select("email", count="exact").execute().count or 0
+        except Exception:
+            unsub_count = sum(1 for l in leads_all if l.get("response_status") == "unsubscribed")
+
+        def rc(status):
+            return sum(1 for l in leads_all if l.get("response_status") == status)
+
+        positive = rc("positive")
+        negative = rc("negative")
+        unsub_resp = rc("unsubscribed")
+        other = rc("other")
+        bounced = rc("bounced")
+        replies = positive + negative + unsub_resp + other  # any human reply
+        contacted = sum(1 for l in leads_all if l.get("status") in ("emailed", "following_up")) + \
+                    sum(1 for l in leads_all if l.get("response_status"))
+
+        # ── Top-line numbers ──────────────────────────────────────────────────
+        st.subheader("Overview")
+        a, b, c, d = st.columns(4)
+        a.metric("📤 Emails sent", total_sent)
+        b.metric("💬 Replies received", replies)
+        reply_rate = f"{(replies / total_sent * 100):.0f}%" if total_sent else "—"
+        c.metric("📈 Reply rate", reply_rate)
+        d.metric("🚫 Unsubscribed", unsub_count)
+
+        st.divider()
+
+        # ── Response breakdown ────────────────────────────────────────────────
+        st.subheader("Responses")
+        e1, e2, e3, e4, e5 = st.columns(5)
+        e1.metric("✅ Positive", positive)
+        e2.metric("❌ Negative", negative)
+        e3.metric("🚫 Unsubscribed", unsub_resp)
+        e4.metric("↩️ Bounced", bounced)
+        e5.metric("❔ Other", other)
+
+        if replies:
+            st.bar_chart(
+                pd.DataFrame(
+                    {"count": [positive, negative, unsub_resp, other]},
+                    index=["Positive", "Negative", "Unsubscribed", "Other"],
+                ),
+                use_container_width=True,
+            )
+        else:
+            st.info("No replies recorded yet — they'll appear here as leads respond.")
+
+        st.divider()
+
+        # ── Pipeline ──────────────────────────────────────────────────────────
+        st.subheader("Lead pipeline")
+        p1, p2, p3, p4 = st.columns(4)
+        p1.metric("🆕 New", sum(1 for l in leads_all if l.get("status") == "new"))
+        p2.metric("📧 Emailed", sum(1 for l in leads_all if l.get("status") == "emailed"))
+        p3.metric("🔁 Following up", sum(1 for l in leads_all if l.get("status") == "following_up"))
+        p4.metric("🏁 Total leads", len(leads_all))
+
+        st.caption(
+            "🚫 Unsubscribed contacts are on a permanent suppression list — they are "
+            "never sent an intro or a follow-up again, even in future campaigns."
+        )
+    except Exception as e:
+        st.error(f"Could not load analytics: {e}")

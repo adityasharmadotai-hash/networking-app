@@ -145,7 +145,7 @@ st.markdown("""
     <p>Capture people you meet at events — instantly searchable with AI</p>
     <div class="badge-row">
         <span class="badge">📇 Smart Contact Book</span>
-        <span class="badge">☁️ Saved to Google Sheets</span>
+        <span class="badge">☁️ Saved to the Cloud</span>
         <span class="badge">🤖 AI-Powered Search</span>
     </div>
 </div>
@@ -257,7 +257,7 @@ with tab_view:
         st.markdown("#### Your Contact Book")
     with col_btn:
         if st.button("🔄 Refresh", use_container_width=True):
-            get_sheet.clear()
+            st.rerun()
 
     try:
         df = load_contacts()

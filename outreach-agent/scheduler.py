@@ -14,6 +14,7 @@ Run in background: nohup python3 scheduler.py > scheduler.log 2>&1 &
 
 import os
 import time
+import random
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
@@ -27,10 +28,13 @@ SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 POLL_INTERVAL           = 30            # seconds between queue checks
 REPLY_CHECK_INTERVAL    = 4 * 3600      # check replies every 4 hours
 FOLLOWUP_INTERVAL_DAYS  = 3
-MAX_FOLLOWUPS           = 5
+MAX_FOLLOWUPS           = int(os.getenv("MAX_FOLLOWUPS", "2"))  # follow-ups after the intro
+RECENT_CONTACT_DAYS     = int(os.getenv("RECENT_CONTACT_DAYS", "30"))  # dedup window for fresh intros
 PACIFIC                 = ZoneInfo("America/Los_Angeles")
 SEND_HOUR_START         = 8             # 8 AM Pacific
 SEND_HOUR_END           = 18            # 6 PM Pacific
+DAILY_EMAIL_LIMIT       = int(os.getenv("DAILY_EMAIL_LIMIT", "20"))  # max sends per PT day
+PER_RUN_LIMIT           = int(os.getenv("PER_RUN_LIMIT", "5"))       # max sends per run (avoid Gmail bursts)
 
 _last_reply_check = 0
 
@@ -47,6 +51,11 @@ def is_send_window() -> bool:
 
 def process_queue():
     """Send any queued emails that are due — only within send window."""
+    # Hard kill-switch: set SENDING_PAUSED=true (Render env) to stop all sending
+    # immediately without a code deploy. Reply/bounce checks keep running.
+    if os.getenv("SENDING_PAUSED", "false").lower() == "true":
+        print("[Scheduler] ⏸️  SENDING_PAUSED=true — skipping all sends this run.")
+        return 0
     if not is_send_window():
         return 0
 
@@ -64,16 +73,114 @@ def process_queue():
     if not due:
         return 0
 
-    print(f"[Scheduler] {len(due)} email(s) due — sending now...")
+    # Respect a daily cap (per Pacific day) and a per-run cap so we never burst
+    # past Gmail's sending limit. Anything over the cap stays pending for later.
+    start_pt = datetime.now(PACIFIC).replace(hour=0, minute=0, second=0, microsecond=0)
+    start_utc = start_pt.astimezone(timezone.utc).isoformat()
+    sent_today_res = supabase.table("email_queue").select("id", count="exact") \
+        .eq("status", "sent").gte("sent_at", start_utc).execute()
+    already_today = sent_today_res.count or 0
+    daily_remaining = max(0, DAILY_EMAIL_LIMIT - already_today)
+    batch_size = min(len(due), PER_RUN_LIMIT, daily_remaining)
+
+    if batch_size <= 0:
+        print(f"[Scheduler] Daily limit reached ({already_today}/{DAILY_EMAIL_LIMIT}) — "
+              f"holding {len(due)} email(s) for tomorrow.")
+        return 0
+
+    batch = due[:batch_size]
+    print(f"[Scheduler] {len(due)} due; sending {len(batch)} this run "
+          f"(today {already_today}/{DAILY_EMAIL_LIMIT}, per-run cap {PER_RUN_LIMIT})...")
     sent = 0
 
-    for item in due:
+    from agent.suppression import get_unsubscribed_emails
+    suppressed = get_unsubscribed_emails()
+
+    # Recently-contacted identities (company / email / domain) — loaded lazily once
+    # per run and only if an intro is actually in the batch, to gate duplicate
+    # outreach when a new discovery re-surfaces a company/person we already reached.
+    from agent.dedup import normalize, email_domain
+    _recent_ident = None
+
+    for idx, item in enumerate(batch):
         lead       = item["lead_data"]
         email_type = item.get("email_type", "intro")
 
+        # Never send to someone who opted out — cancel the queued email.
+        if (lead.get("contact_email") or "").strip().lower() in suppressed:
+            supabase.table("email_queue").update({
+                "status": "cancelled", "error_message": "recipient unsubscribed",
+            }).eq("id", item["id"]).execute()
+            print(f"[Scheduler] 🚫 Skipped (unsubscribed): {lead.get('contact_email')}")
+            continue
+
+        # Last-line gate: never send to a malformed/undeliverable address — a bounce
+        # both wastes the send and damages sender reputation for everyone else.
+        from agent.email_validation import validate_email
+        _ok, _reason = validate_email(lead.get("contact_email"))
+        if not _ok:
+            supabase.table("email_queue").update({
+                "status": "cancelled", "error_message": f"invalid email: {_reason}",
+            }).eq("id", item["id"]).execute()
+            print(f"[Scheduler] 🚫 Skipped (invalid email: {_reason}): {lead.get('contact_email')}")
+            continue
+
+        # Duplicate-outreach guard (INTROS ONLY): if we already sent an intro to
+        # this company, this exact person, or this work domain within the window,
+        # skip — a re-discovered Google result must not trigger a second intro.
+        # Follow-ups are exempt: they SHOULD re-contact the same person.
+        if email_type == "intro":
+            if _recent_ident is None:
+                from agent.dedup import get_recently_contacted_identities
+                _recent_ident = get_recently_contacted_identities(RECENT_CONTACT_DAYS)
+            _rc_companies, _rc_emails, _rc_domains = _recent_ident
+            _em = (lead.get("contact_email") or "").strip().lower()
+            _comp = normalize(lead.get("company_name") or "")
+            _dom = email_domain(_em)
+            _dup = None
+            if _em and _em in _rc_emails:
+                _dup = f"person {_em}"
+            elif _dom and _dom in _rc_domains:
+                _dup = f"domain {_dom}"
+            elif _comp and _comp in _rc_companies:
+                _dup = f"company {lead.get('company_name')}"
+            if _dup:
+                supabase.table("email_queue").update({
+                    "status": "cancelled",
+                    "error_message": f"duplicate outreach: {_dup} already contacted "
+                                     f"within {RECENT_CONTACT_DAYS} days",
+                }).eq("id", item["id"]).execute()
+                print(f"[Scheduler] 🚫 Skipped intro (duplicate — {_dup} contacted "
+                      f"<{RECENT_CONTACT_DAYS}d ago): {lead.get('company_name')}")
+                continue
+
         try:
             subject, body = render_template(email_type, lead)
-            gmail_id = send_email(lead["contact_email"], subject, body)
+            # Space out sends within a run so a batch doesn't all leave in the
+            # same second (looks human, gentler on deliverability).
+            if idx > 0:
+                time.sleep(random.randint(20, 50))
+
+            # Thread follow-ups under the original intro so they land in the same
+            # Gmail conversation (both for us and the recipient's mail client).
+            is_followup = email_type.startswith("followup")
+            in_reply_to = lead.get("intro_rfc_message_id") if is_followup else None
+            reply_thread = lead.get("intro_thread_id") if is_followup else None
+            result = send_email(
+                lead["contact_email"], subject, body,
+                in_reply_to=in_reply_to, thread_id=reply_thread,
+            )
+
+            if not result or not result.get("id"):
+                # Send failed (often a Gmail rate/limit error) — stop this run so
+                # we don't hammer the limit; the rest stay pending for next run.
+                print("[Scheduler] ⚠️ A send returned no id (possible Gmail limit) — "
+                      "stopping this run; remaining emails stay pending.")
+                break
+
+            gmail_id     = result["id"]
+            gmail_thread = result.get("thread_id")
+            rfc_msgid    = result.get("rfc_message_id")
 
             if gmail_id:
                 supabase.table("email_queue").update({
@@ -91,19 +198,38 @@ def process_queue():
                         "subject": subject,
                         "body": body,
                         "gmail_message_id": gmail_id,
+                        "gmail_thread_id": gmail_thread,
+                        "rfc_message_id": rfc_msgid,
                         "campaign_id": item.get("campaign_id"),
                     }).execute()
 
-                    followup_count = lead.get("followup_count", 0)
+                    # Advance the counter from the email TYPE we just sent
+                    # (followup_2 -> count 2), NOT from the queued snapshot. The old
+                    # snapshot let duplicate rows keep resetting count to 1, so leads
+                    # were stuck on follow-up #1 forever and never reached #2-5.
+                    if is_followup:
+                        try:
+                            new_count = int(email_type.split("_")[1])
+                        except (IndexError, ValueError):
+                            new_count = (lead.get("followup_count", 0) or 0) + 1
+                    else:
+                        new_count = 0
                     next_followup  = (datetime.now(timezone.utc) + timedelta(days=FOLLOWUP_INTERVAL_DAYS)).date().isoformat()
-                    new_status     = "following_up" if email_type.startswith("followup") else "emailed"
+                    new_status     = "following_up" if is_followup else "emailed"
 
-                    supabase.table("leads").update({
+                    lead_update = {
                         "status": new_status,
                         "last_contacted_at": datetime.now(timezone.utc).isoformat(),
-                        "followup_count": followup_count + (1 if email_type.startswith("followup") else 0),
+                        "followup_count": new_count,
                         "next_followup_date": next_followup,
-                    }).eq("id", lead["lead_id"]).execute()
+                    }
+                    # Record the intro's thread + Message-ID so later follow-ups
+                    # can reply into the same conversation.
+                    if not is_followup:
+                        lead_update["gmail_thread_id"] = gmail_thread
+                        lead_update["rfc_message_id"]  = rfc_msgid
+
+                    supabase.table("leads").update(lead_update).eq("id", lead["lead_id"]).execute()
 
                 sent += 1
                 print(f"[Scheduler] ✅ [{email_type}] {lead.get('contact_name')} @ {lead.get('company_name')}")
@@ -129,7 +255,8 @@ def schedule_followups():
     """
     Find leads due for a follow-up and queue them.
     Only for leads with no response, or response = 'other'.
-    Skip: positive, negative, bounced.
+    Skip: positive, negative, bounced, unsubscribed, and anyone on the
+    permanent suppression list.
     """
     if not is_send_window():
         return 0
@@ -144,9 +271,23 @@ def schedule_followups():
         .lt("followup_count", MAX_FOLLOWUPS) \
         .execute()
 
+    from agent.suppression import get_unsubscribed_emails
+    suppressed = get_unsubscribed_emails()
+
+    # Idempotency guard: never queue a follow-up for a lead that already has an
+    # UNSENT email in the queue. Without this, every run re-queues the same leads
+    # (their followup_count only advances once the email sends) — which is exactly
+    # what produced 30 duplicate follow-ups per lead.
+    existing = supabase.table("email_queue").select("lead_data") \
+        .in_("status", ["pending", "awaiting_approval"]).execute().data or []
+    already_queued = {(r.get("lead_data") or {}).get("lead_id") for r in existing}
+    already_queued.discard(None)
+
     due_leads = [
         l for l in result.data
-        if l.get("response_status") not in ("positive", "negative", "bounced")
+        if l.get("response_status") not in ("positive", "negative", "bounced", "unsubscribed")
+        and (l.get("contact_email") or "").strip().lower() not in suppressed
+        and l["id"] not in already_queued
     ]
 
     if not due_leads:
@@ -172,6 +313,10 @@ def schedule_followups():
             "contact_linkedin_url": lead.get("contact_linkedin_url"),
             "job_title_hiring_for": lead.get("job_title_hiring_for"),
             "followup_count":       followup_num - 1,
+            # Carry the intro's thread + Message-ID so the send threads the
+            # follow-up into the original conversation.
+            "intro_thread_id":      lead.get("gmail_thread_id"),
+            "intro_rfc_message_id": lead.get("rfc_message_id"),
         }
 
         supabase.table("email_queue").insert({
@@ -231,5 +376,85 @@ def run():
         time.sleep(POLL_INTERVAL)
 
 
+def recent_bounce_count(query="from:mailer-daemon newer_than:1d") -> int:
+    """Count bounce notifications in the last day (safety circuit breaker)."""
+    try:
+        from agent.reply_checker import get_gmail_service
+        svc = get_gmail_service()
+        r = svc.users().messages().list(userId="me", q=query, maxResults=50).execute()
+        return len(r.get("messages", []))
+    except Exception as e:
+        print(f"[Scheduler] Bounce check failed: {e}")
+        return 0
+
+
+def sending_is_paused() -> bool:
+    """Auto-pause sending if too many bounces recently — stops a reputation
+    spiral (what would have caught the original 40-email failure automatically)."""
+    threshold = int(os.getenv("BOUNCE_PAUSE_THRESHOLD", "8"))
+    bounces = recent_bounce_count()
+    if bounces >= threshold:
+        print(f"[Scheduler] 🛑 CIRCUIT BREAKER: {bounces} bounces in the last 24h "
+              f"(>= {threshold}). PAUSING all sends. Investigate before resuming.")
+        return True
+    if bounces:
+        print(f"[Scheduler] Bounce health: {bounces}/{threshold} in last 24h — OK.")
+    return False
+
+
+def notify_pending_approvals():
+    """Email the approver if any emails are awaiting approval. Meant to run once
+    a day (its own cron), so the approver gets a daily nudge to review the queue."""
+    approver = os.getenv("APPROVER_EMAIL", "devrajsolanki33@gmail.com")
+    supabase = get_supabase()
+    waiting = supabase.table("email_queue").select("id, campaign_name") \
+        .eq("status", "awaiting_approval").execute().data or []
+    if not waiting:
+        print("[Approvals] Nothing awaiting approval — no email sent.")
+        return 0
+
+    campaigns = sorted({w.get("campaign_name", "—") for w in waiting})
+    from agent.email_sender import send_email
+    body = (
+        f"Hi,\n\n{len(waiting)} outreach email(s) are waiting for your approval "
+        f"across {len(campaigns)} campaign(s):\n" +
+        "\n".join(f"  • {c}" for c in campaigns) +
+        "\n\nOpen the HireGen dashboard → Approvals tab to Approve, Reject, or "
+        "leave them for later. Nothing sends until you approve it.\n\n— HireGen"
+    )
+    send_email(approver, f"[HireGen] {len(waiting)} email(s) awaiting your approval", body)
+    print(f"[Approvals] Reminder sent to {approver}: {len(waiting)} awaiting approval.")
+    return len(waiting)
+
+
+def run_once():
+    """Single pass — for GitHub Actions / cron (free, no always-on worker needed).
+    Sends due queued emails, queues due follow-ups, and checks for replies, then exits.
+    The 8am–6pm PT send window is still enforced by process_queue/schedule_followups."""
+    print(f"[Scheduler] Single run — {datetime.now(PACIFIC).strftime('%Y-%m-%d %I:%M %p PT')}")
+    if sending_is_paused():
+        print("[Scheduler] Sends paused this run (bounce circuit breaker). Reply check still runs.")
+    else:
+        try:
+            sent = process_queue()
+            queued = schedule_followups()
+            print(f"[Scheduler] ✅ {sent} sent, 📅 {queued} follow-up(s) queued.")
+        except Exception as e:
+            print(f"[Scheduler] Send error: {e}")
+
+    try:
+        from agent.reply_checker import check_all_replies
+        updated = check_all_replies()
+        print(f"[Scheduler] 📬 {updated} lead(s) updated with reply status.")
+    except Exception as e:
+        print(f"[Scheduler] Reply check error: {e}")
+
+
 if __name__ == "__main__":
-    run()
+    import sys
+    if "--notify-approvals" in sys.argv:
+        notify_pending_approvals()
+    elif "--once" in sys.argv:
+        run_once()
+    else:
+        run()

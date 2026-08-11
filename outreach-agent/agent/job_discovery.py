@@ -19,15 +19,26 @@ from dotenv import load_dotenv
 load_dotenv()
 
 def _get_secret(key: str, default: str = "") -> str:
-    """Read from Streamlit secrets (cloud) or env var (local/Railway)."""
-    try:
-        import streamlit as st
-        val = st.secrets.get(key, "")
-        if val:
-            return val
-    except Exception:
-        pass
-    return os.getenv(key, default)
+    """Read from env var first (local/Railway/Render), then Streamlit secrets (cloud).
+    Only touches st.secrets when a secrets.toml exists, to avoid Streamlit rendering
+    a 'No secrets files found' error banner."""
+    val = os.getenv(key, "")
+    if val:
+        return val
+    paths = [
+        os.path.expanduser("~/.streamlit/secrets.toml"),
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                     ".streamlit", "secrets.toml"),
+    ]
+    if any(os.path.exists(p) for p in paths):
+        try:
+            import streamlit as st
+            val = st.secrets.get(key, "")
+            if val:
+                return val
+        except Exception:
+            pass
+    return default
 
 
 def _serpapi_key() -> str:

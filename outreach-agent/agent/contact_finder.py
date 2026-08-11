@@ -1,28 +1,70 @@
 import os
+import re
 import time
 import requests
 from dotenv import load_dotenv
 
 load_dotenv()
 
+# Verify a revealed contact actually works at the target company (by email domain)
+# before accepting it. Prevents the "Visa job -> contact at imc.com" mismatch.
+VERIFY_CONTACT_DOMAIN = os.getenv("VERIFY_CONTACT_DOMAIN", "true").lower() != "false"
+
+_COMPANY_STOP = {
+    "inc", "llc", "corp", "corporation", "co", "ltd", "group", "the", "and", "of",
+    "technologies", "tech", "solutions", "labs", "systems", "usa", "company",
+    "global", "digital", "resources", "financial", "software", "services",
+}
+
+
+def _company_tokens(name: str) -> set[str]:
+    return {w for w in re.split(r"[^a-z0-9]+", (name or "").lower())
+            if len(w) > 2 and w not in _COMPANY_STOP}
+
+
+def email_matches_company(email: str, company: str) -> bool:
+    """True if the email's domain plausibly belongs to the company. Used to reject
+    contacts the search matched to the wrong company."""
+    if not email or "@" not in email:
+        return False
+    if not company:
+        return True  # nothing to compare against — don't over-filter
+    domain = email.split("@")[-1].lower()
+    dom_flat = domain.replace(".", "").replace("-", "")
+    tokens = _company_tokens(company)
+    if not tokens:
+        return True
+    if any(t in dom_flat for t in tokens):
+        return True
+    dom_core = re.sub(r"[^a-z0-9]", "", domain.rsplit(".", 2)[0].split(".")[-1])
+    comp_flat = re.sub(r"[^a-z0-9]", "", company.lower())
+    return bool(dom_core and dom_core in comp_flat)
+
 SERPAPI_URL = "https://serpapi.com/search.json"
 WIZA_BASE = "https://wiza.co/api"
 
 
 def _get_secret(key: str) -> str:
-    """Read from Streamlit secrets (cloud) or env var (local/Railway)."""
+    """Read from Streamlit secrets (cloud) or env var (local/Railway/Render)."""
     # Always check env var first — most reliable across all environments
     val = os.getenv(key, "")
     if val:
         return val
-    # Then try Streamlit secrets
-    try:
-        import streamlit as st
-        val = st.secrets.get(key, "")
-        if val:
-            return val
-    except Exception:
-        pass
+    # Then try Streamlit secrets — but only if a secrets.toml exists, otherwise
+    # probing st.secrets makes Streamlit render a 'No secrets files found' banner.
+    paths = [
+        os.path.expanduser("~/.streamlit/secrets.toml"),
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                     ".streamlit", "secrets.toml"),
+    ]
+    if any(os.path.exists(p) for p in paths):
+        try:
+            import streamlit as st
+            val = st.secrets.get(key, "")
+            if val:
+                return val
+        except Exception:
+            pass
     return ""
 
 
@@ -320,10 +362,23 @@ def prospect_contact(company_name: str) -> dict | None:
         contact = poll_wiza_reveal(reveal_id, max_wait=420)
 
         if contact:
-            print(f"[Contact Finder] ✅ Got email for {contact['contact_name']} at {company_name}")
+            email = contact.get("contact_email", "")
+            # Reject malformed / undeliverable addresses before anything else.
+            from agent.email_validation import validate_email
+            _ok, _reason = validate_email(email)
+            if not _ok:
+                print(f"[Contact Finder] ⚠️ Rejected invalid email ({_reason}): {email} — trying next title.")
+                continue
+            # Reject contacts whose email domain doesn't match the target company —
+            # the LinkedIn search often matches people who only *mention* the company.
+            if VERIFY_CONTACT_DOMAIN and not email_matches_company(email, company_name):
+                print(f"[Contact Finder] ⚠️ Rejected mismatch: {email} does not match "
+                      f"'{company_name}' — trying next title.")
+                continue
+            print(f"[Contact Finder] ✅ Verified {contact['contact_name']} at {company_name} ({email})")
             return contact
 
-    print(f"[Contact Finder] No contact found for: {company_name}")
+    print(f"[Contact Finder] No verified contact found for: {company_name}")
     return None
 
 

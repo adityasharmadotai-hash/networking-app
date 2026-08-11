@@ -1,0 +1,40 @@
+name: Daily auto-discovery
+
+# Each weekday morning: discover jobs, dedup, find verified contacts, draft
+# personalized intros, and queue them as 'awaiting_approval'. Emails the
+# approver a summary. Nothing sends until approved in the dashboard.
+# NOTE: `schedule` only runs from the default branch (main).
+
+on:
+  schedule:
+    - cron: "0 14 * * 1-5"   # 14:00 UTC ≈ 7:00 AM PT (before the 8am send window)
+  workflow_dispatch:
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -r outreach-agent/requirements.txt
+      - name: Run daily discovery
+        working-directory: outreach-agent
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GMAIL_TOKEN_B64: ${{ secrets.GMAIL_TOKEN_B64 }}
+          SENDER_EMAIL: susan@hiregen.co
+          APPROVER_EMAIL: devrajsolanki33@gmail.com
+          SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
+          WIZA_API_KEY: ${{ secrets.WIZA_API_KEY }}
+          GOOGLE_CSE_API_KEY: ${{ secrets.GOOGLE_CSE_API_KEY }}
+          GOOGLE_CSE_ID: ${{ secrets.GOOGLE_CSE_ID }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          DAILY_NEW_LEADS: "10"
+          DISCOVER_ROLES: "Full-stack Developer,Back-end Developer,AI Engineer,Machine Learning Engineer"
+          DISCOVER_LOCATIONS: "USA"
+          VERIFY_CONTACT_DOMAIN: "true"
+        run: python daily_discover.py
