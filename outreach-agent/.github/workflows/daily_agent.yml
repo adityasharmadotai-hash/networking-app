@@ -1,4 +1,10 @@
-name: Daily Outreach Agent
+name: Daily Discovery (queue for approval)
+
+# Discovers new companies each weekday morning and QUEUES them to the Approvals
+# tab (status = awaiting_approval). It does NOT send email directly — the Render
+# worker (scheduler.py) is the single sender, with the dedup/idempotency guards.
+# (Previously this ran main.py, which sent directly and double-sent alongside the
+#  worker — that's fixed by running daily_discover.py instead.)
 
 on:
   schedule:
@@ -47,6 +53,6 @@ jobs:
         working-directory: outreach-agent
         run: echo '${{ secrets.GMAIL_TOKEN_PICKLE_B64 }}' | base64 -d > gmail_token.json
 
-      - name: Run outreach agent
+      - name: Run daily discovery (queues to Approvals — does NOT send directly)
         working-directory: outreach-agent
-        run: python main.py
+        run: python daily_discover.py
