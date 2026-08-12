@@ -37,5 +37,6 @@ jobs:
           DAILY_EMAIL_LIMIT: "15"   # warm-up cap per day (raise slowly as reputation builds)
           PER_RUN_LIMIT: "3"        # max per 20-min run — avoids Gmail burst limits
           FOLLOWUP_INTERVAL_DAYS: "3"
-          MAX_FOLLOWUPS: "5"
+          MAX_FOLLOWUPS: "2"
+          RECENT_CONTACT_DAYS: "30"
         run: python scheduler.py --once
