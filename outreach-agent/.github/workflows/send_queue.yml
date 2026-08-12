@@ -1,0 +1,63 @@
+name: Send queued emails
+
+# Replaces the always-on Render worker. Runs scheduler.py --once, which:
+#   - drains the email_queue (sends approved intros + due follow-ups),
+#   - queues follow-ups (with the idempotency + dedup guards),
+#   - checks Gmail for replies and bounces.
+# It always runs the LATEST committed code (fresh checkout each run) — no deploy,
+# no "stuck on old code". The 8am-6pm PT send window, daily/per-run caps, and the
+# bounce circuit breaker inside scheduler.py gate what actually sends, so running
+# on a fixed cron is safe.
+#
+# IMPORTANT: this is the single sender. Do NOT also run the Render worker, or the
+# two will both drain the queue and double-send. Suspend the Render service.
+
+on:
+  schedule:
+    - cron: "0 * * * *"       # hourly; the send-window + caps decide what actually goes out
+  workflow_dispatch:            # manual "Run workflow" button for testing / on-demand sends
+
+# Never let two runs overlap and grab the same queued rows.
+concurrency:
+  group: send-queue
+  cancel-in-progress: false
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r outreach-agent/requirements.txt
+
+      - name: Write .env
+        working-directory: outreach-agent
+        run: |
+          cat <<EOF > .env
+          SUPABASE_URL=${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SENDER_EMAIL=susan@hiregen.co
+          GMAIL_TOKEN_FILE=gmail_token.json
+          GMAIL_CREDENTIALS_FILE=gmail_credentials.json
+          DAILY_EMAIL_LIMIT=20
+          PER_RUN_LIMIT=5
+          FOLLOWUP_INTERVAL_DAYS=3
+          MAX_FOLLOWUPS=2
+          RECENT_CONTACT_DAYS=30
+          APPROVER_EMAIL=devrajsolanki33@gmail.com
+          EOF
+
+      - name: Write Gmail token
+        working-directory: outreach-agent
+        run: echo '${{ secrets.GMAIL_TOKEN_PICKLE_B64 }}' | base64 -d > gmail_token.json
+
+      - name: Drain queue, send, and check replies/bounces
+        working-directory: outreach-agent
+        run: python scheduler.py --once
