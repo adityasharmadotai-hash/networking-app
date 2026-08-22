@@ -99,6 +99,108 @@ MUSE_CATEGORY_MAP = {
 }
 
 
+# ─────────────────────── Link resolution helpers ─────────────────────────────
+# Google Jobs' `share_link` is just a google.com/search?…ibp=htl;jobs URL — it
+# often degrades to a generic search results page instead of the posting. We
+# prefer the real "apply" destination (LinkedIn / the company's own ATS) and
+# only fall back to the Google link when nothing better exists.
+
+# Job boards & aggregators: fine as an apply link, but their domain is NOT the
+# company's website, so never derive a company site from them.
+_AGGREGATOR_DOMAINS = {
+    "linkedin.com", "indeed.com", "glassdoor.com", "ziprecruiter.com",
+    "monster.com", "dice.com", "simplyhired.com", "careerbuilder.com",
+    "themuse.com", "adzuna.com", "google.com", "jobs.google.com", "talent.com",
+    "lever.co", "greenhouse.io", "ashbyhq.com", "workable.com", "smartrecruiters.com",
+    "bamboohr.com", "jobvite.com", "icims.com", "myworkdayjobs.com", "workday.com",
+    "taleo.net", "successfactors.com", "recruitee.com", "breezy.hr", "teamtailor.com",
+    "wellfound.com", "angel.co", "builtin.com", "remoterocketship.com", "jooble.org",
+    "snagajob.com", "upwork.com", "hired.com", "otta.com", "levels.fyi",
+}
+
+# Preference order when a posting offers several apply links.
+_APPLY_PREFERENCE = (
+    "linkedin.com", "greenhouse.io", "lever.co", "ashbyhq.com", "workable.com",
+    "smartrecruiters.com", "myworkdayjobs.com", "jobvite.com", "icims.com",
+)
+
+
+def _domain_of(url: str) -> str:
+    """Registrable-ish domain of a URL ('jobs.acme.co.uk' → 'acme.co.uk')."""
+    try:
+        host = urllib.parse.urlparse(url).netloc.lower().split(":")[0]
+    except Exception:
+        return ""
+    host = host[4:] if host.startswith("www.") else host
+    parts = host.split(".")
+    if len(parts) <= 2:
+        return host
+    # Handle two-level public suffixes (co.uk, com.au, co.in, …).
+    if parts[-2] in {"co", "com", "org", "net", "gov", "ac"} and len(parts[-1]) == 2:
+        return ".".join(parts[-3:])
+    return ".".join(parts[-2:])
+
+
+def _is_aggregator(url: str) -> bool:
+    dom = _domain_of(url)
+    return any(dom == a or dom.endswith("." + a) for a in _AGGREGATOR_DOMAINS)
+
+
+def _best_apply_link(apply_options: list[dict]) -> str:
+    """Pick the most useful apply destination from SerpAPI's apply_options."""
+    links = [o.get("link", "") for o in (apply_options or []) if o.get("link")]
+    if not links:
+        return ""
+    for pref in _APPLY_PREFERENCE:
+        for link in links:
+            if pref in _domain_of(link):
+                return link
+    # No known board — a company-owned careers page is the next best thing.
+    for link in links:
+        if not _is_aggregator(link):
+            return link
+    return links[0]
+
+
+def _company_website(company: str, *urls: str) -> str:
+    """Company's own site, derived from a non-aggregator apply/posting URL.
+
+    Returns "" rather than guessing: a wrong link wastes more time than no link.
+    """
+    for url in urls:
+        if url and not _is_aggregator(url):
+            dom = _domain_of(url)
+            if dom:
+                return f"https://{dom}"
+    return ""
+
+
+def _linkedin_company_url(company: str) -> str:
+    """LinkedIn page for a company.
+
+    We deliberately do NOT guess /company/<slug> — that 404s often enough to be
+    worse than useless. A company search scoped to the exact name always lands
+    on a real result page.
+    """
+    name = (company or "").strip()
+    if not name:
+        return ""
+    return ("https://www.linkedin.com/search/results/companies/?keywords="
+            + urllib.parse.quote(name))
+
+
+def _attach_company_links(job: dict) -> dict:
+    """Fill company_website / company_linkedin_url if the source didn't supply them."""
+    company = job.get("company_name", "")
+    if not job.get("company_website"):
+        job["company_website"] = _company_website(
+            company, job.get("apply_url", ""), job.get("job_url", "")
+        )
+    if not job.get("company_linkedin_url"):
+        job["company_linkedin_url"] = _linkedin_company_url(company)
+    return job
+
+
 # ─────────────────────────── SerpAPI ────────────────────────────────────────
 
 _serpapi_quota_exhausted = False  # module-level flag; reset on each process start
@@ -139,14 +241,27 @@ def _search_serpapi(role: str, location: str = None, num: int = 10) -> list[dict
 
 
 def _parse_serpapi_job(job: dict, role: str, location: str) -> dict:
-    return {
-        "company_name":         job.get("company_name", "").strip(),
+    company = job.get("company_name", "").strip()
+
+    # The real destination: "Apply on LinkedIn" / the company's ATS. Falling back
+    # to share_link (a google.com/search URL) only when there is nothing better.
+    apply_url  = _best_apply_link(job.get("apply_options"))
+    share_link = job.get("share_link", "")
+    related    = [l.get("link", "") for l in (job.get("related_links") or []) if l.get("link")]
+
+    # related_links usually starts with the company's own careers page.
+    company_site = _company_website(company, apply_url, *related)
+
+    return _attach_company_links({
+        "company_name":         company,
         "job_title_hiring_for": job.get("title", "").strip(),
-        "job_url":              job.get("share_link") or (job.get("related_links") or [{}])[0].get("link", ""),
+        "job_url":              apply_url or share_link or (related[0] if related else ""),
+        "apply_url":            apply_url,
+        "company_website":      company_site,
         "job_source":           job.get("via", "google_jobs").replace("via ", ""),
         "role_query":           role,
         "location_query":       location or "Any",
-    }
+    })
 
 
 # ─────────────────────────── LinkedIn (guest) ────────────────────────────────
@@ -191,14 +306,27 @@ def _search_linkedin(role: str, location: str = None, num: int = 10) -> list[dic
             link_el    = card.find("a", class_="base-card__full-link")
             if not (title_el and company_el):
                 continue
-            jobs.append({
+
+            # The subtitle wraps a real /company/<slug> link — the only place we
+            # get an exact LinkedIn company page rather than a search fallback.
+            company_link_el = company_el.find("a")
+            company_linkedin = ""
+            if company_link_el and company_link_el.get("href"):
+                href = company_link_el["href"].split("?")[0]
+                if "linkedin.com/company/" in href:
+                    company_linkedin = href
+
+            job_url = link_el["href"].split("?")[0] if link_el else ""
+            jobs.append(_attach_company_links({
                 "company_name":         company_el.get_text(strip=True),
                 "job_title_hiring_for": title_el.get_text(strip=True),
-                "job_url":              link_el["href"].split("?")[0] if link_el else "",
+                "job_url":              job_url,
+                "apply_url":            job_url,
+                "company_linkedin_url": company_linkedin,
                 "job_source":           "LinkedIn",
                 "role_query":           role,
                 "location_query":       location or "Any",
-            })
+            }))
         return jobs
 
     except Exception as e:
@@ -227,18 +355,20 @@ def _search_muse(role: str, location: str = None, num: int = 10) -> list[dict]:
         data = resp.json()
         jobs = []
         for j in data.get("results", [])[:num]:
-            company = j.get("company", {}).get("name", "").strip()
+            company_obj = j.get("company", {}) or {}
+            company = company_obj.get("name", "").strip()
             title   = j.get("name", "").strip()
             url     = j.get("refs", {}).get("landing_page", "")
             if company and title:
-                jobs.append({
+                jobs.append(_attach_company_links({
                     "company_name":         company,
                     "job_title_hiring_for": title,
                     "job_url":              url,
+                    "apply_url":            url,
                     "job_source":           "The Muse",
                     "role_query":           role,
                     "location_query":       location or "Any",
-                })
+                }))
         return jobs
 
     except Exception as e:
@@ -280,14 +410,15 @@ def _search_adzuna(role: str, location: str = None, num: int = 10) -> list[dict]
             title   = j.get("title", "").strip()
             url     = j.get("redirect_url", "")
             if company and title:
-                jobs.append({
+                jobs.append(_attach_company_links({
                     "company_name":         company,
                     "job_title_hiring_for": title,
                     "job_url":              url,
+                    "apply_url":            url,
                     "job_source":           "Adzuna",
                     "role_query":           role,
                     "location_query":       location or "Any",
-                })
+                }))
         return jobs
 
     except Exception as e:

@@ -1,6 +1,7 @@
 import os
 import sys
 import hmac
+import json
 import uuid
 import random
 import pickle
@@ -18,6 +19,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from agent.job_discovery import discover_jobs, ALL_ROLES, ALL_LOCATIONS
 from agent.dedup import get_existing_clients, get_already_contacted, normalize
 from agent.email_sender import send_email, render_template, EMAIL_TEMPLATES
+from agent.company_filter import filter_companies
+from agent import session_store
 from streamlit_quill import st_quill
 
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"))
@@ -340,7 +343,8 @@ def save_lead(supabase, lead):
     row = {
         "company_name": lead["company_name"],
         "job_title_hiring_for": lead.get("job_title_hiring_for"),
-        "job_url": lead.get("job_url"),
+        # Prefer the direct posting over a Google Jobs search link.
+        "job_url": lead.get("apply_url") or lead.get("job_url"),
         "job_source": lead.get("job_source"),
         "contact_name": lead.get("contact_name"),
         "contact_title": lead.get("contact_title"),
@@ -377,11 +381,66 @@ def _next_send_slot(dt_utc):
     return pt.astimezone(timezone.utc)
 
 
+def approve_and_reschedule(supabase, items: list[dict]) -> list[str]:
+    """Release queued emails for sending, re-stamping `scheduled_for` from *now*.
+
+    `scheduled_for` is set when a batch is queued. If it then sits in Approvals
+    for a few days, that timestamp is long past by the time it's approved — which
+    is why the UI showed send times in the past. Approval is the real starting
+    gun, so we recompute the whole schedule here: first slot inside the next
+    8am–6pm PT window, then 1–3 minute gaps, exactly like the initial queue.
+
+    Returns the new send times, formatted PT, in the order they were approved.
+    """
+    send_at = _next_send_slot(datetime.now(timezone.utc))
+
+    # Don't stack on top of emails already approved and waiting to go out —
+    # otherwise approving one at a time lands them all in the same minute and
+    # undoes the drip pacing. Start after the last one already queued.
+    try:
+        last = supabase.table("email_queue").select("scheduled_for") \
+            .eq("status", "pending").order("scheduled_for", desc=True) \
+            .limit(1).execute().data or []
+        if last:
+            last_at = datetime.fromisoformat(last[0]["scheduled_for"].replace("Z", "+00:00"))
+            if last_at > send_at:
+                send_at = _next_send_slot(last_at + timedelta(seconds=random.randint(60, 180)))
+    except Exception:
+        pass  # pacing is a nicety — never block an approval on it
+
+    new_times = []
+    for i, item in enumerate(items):
+        if i > 0:
+            send_at = _next_send_slot(send_at + timedelta(seconds=random.randint(60, 180)))
+        supabase.table("email_queue").update({
+            "status": "pending",
+            "scheduled_for": send_at.isoformat(),
+        }).eq("id", item["id"]).execute()
+        new_times.append(send_at.astimezone(PACIFIC).strftime("%b %d, %I:%M %p PT"))
+    return new_times
+
+
+def company_links_md(item: dict) -> str:
+    """Small ' · 🔗 LinkedIn · 🌐 Site' link row rendered under a company name.
+    Gives the reviewer a one-click way to check who the company actually is."""
+    bits = []
+    li = item.get("company_linkedin_url")
+    web = item.get("company_website")
+    if li:
+        bits.append(f"[🔗 LinkedIn]({li})")
+    if web:
+        bits.append(f"[🌐 Site]({web})")
+    if not bits:
+        return ""
+    return "<span style='font-size:.78rem'>" + " · ".join(bits) + "</span>"
+
+
 # ── Session state initialisation ──────────────────────────────────────────────
-for key, default in {
+_DEFAULT_STATE = {
     "step": 1,
     "discovered_jobs": None,
     "approved_jobs": None,
+    "discovery_excluded": None,
     "dedup_removed": None,
     "dedup_kept": None,
     "existing_clients_list": [],
@@ -394,10 +453,103 @@ for key, default in {
     "enriched_leads": None,
     "final_leads": None,
     "send_complete": False,
+    "schedule_preview": None,
+    "current_campaign_id": None,
     "active_tab": "Outreach Wizard",
-}.items():
+}
+
+for key, default in _DEFAULT_STATE.items():
     if key not in st.session_state:
         st.session_state[key] = default
+
+
+# ── Durable wizard state ──────────────────────────────────────────────────────
+# Streamlit wipes st.session_state whenever the browser reconnects with a fresh
+# session id — a refresh, a laptop waking from sleep, an idle websocket timeout,
+# or the Cloud container recycling. That used to throw away the entire discovery
+# run. We now mirror the wizard into Supabase, keyed by an id in the URL, and
+# reload it automatically on a cold start.
+_SID_PARAM = "sid"
+
+# Everything worth surviving a reconnect. All JSON-serializable.
+_PERSIST_KEYS = [
+    "step", "discovered_jobs", "approved_jobs", "discovery_excluded",
+    "dedup_removed", "dedup_kept", "existing_clients_list",
+    "recently_contacted_count", "approved_after_dedup",
+    "email_template_subject", "email_template_body", "followup_templates",
+    "email_limit", "enriched_leads", "final_leads", "send_complete",
+    "schedule_preview", "current_campaign_id",
+]
+
+
+def _wizard_sid() -> str:
+    """Stable per-browser session id, carried in the URL so a reload finds it."""
+    sid = st.query_params.get(_SID_PARAM)
+    if not sid:
+        sid = uuid.uuid4().hex
+        st.query_params[_SID_PARAM] = sid
+    return sid
+
+
+def _restore_wizard_state():
+    """One-shot restore after a cold start (new Streamlit session)."""
+    if st.session_state.get("_wizard_restored"):
+        return
+    st.session_state["_wizard_restored"] = True
+
+    sid = _wizard_sid()
+    try:
+        supabase = get_supabase()
+    except Exception:
+        supabase = None
+
+    saved = session_store.load_state(supabase, sid)
+    if not saved:
+        return
+
+    restored_any = False
+    for key in _PERSIST_KEYS:
+        if key in saved and saved[key] != _DEFAULT_STATE.get(key):
+            st.session_state[key] = saved[key]
+            restored_any = True
+
+    if restored_any and (saved.get("discovered_jobs") or saved.get("enriched_leads")):
+        st.session_state["_restored_notice"] = True
+
+
+def _persist_wizard_state():
+    """Save the wizard at the end of a run — but only when something changed,
+    so a normal rerun doesn't hammer Supabase."""
+    payload = {k: st.session_state.get(k) for k in _PERSIST_KEYS}
+    try:
+        blob = json.dumps(payload, default=str, sort_keys=True)
+    except Exception:
+        return
+    fingerprint = hashlib.sha256(blob.encode()).hexdigest()
+    if fingerprint == st.session_state.get("_wizard_fingerprint"):
+        return
+
+    try:
+        supabase = get_supabase()
+    except Exception:
+        supabase = None
+    session_store.save_state(supabase, _wizard_sid(), json.loads(blob))
+    st.session_state["_wizard_fingerprint"] = fingerprint
+
+
+def _reset_wizard_state(keys: list[str]):
+    """Clear wizard keys and drop the persisted copy so it can't come back."""
+    for key in keys:
+        st.session_state[key] = _DEFAULT_STATE.get(key)
+    try:
+        supabase = get_supabase()
+    except Exception:
+        supabase = None
+    session_store.clear_state(supabase, _wizard_sid())
+    st.session_state["_wizard_fingerprint"] = None
+
+
+_restore_wizard_state()
 
 # ── Top-level tabs ─────────────────────────────────────────────────────────────
 tab_wizard, tab_approval, tab_history, tab_queue, tab_sent, tab_analytics = st.tabs(
@@ -444,6 +596,10 @@ with tab_wizard:
     if st.session_state.get("_flash"):
         st.toast(st.session_state.pop("_flash"), icon="✅")
 
+    if st.session_state.pop("_restored_notice", False):
+        st.info("🔄 **Picked up where you left off.** Your discovery run was restored — "
+                "no need to search again.")
+
     # Visual stepper
     steps = ["Discover Jobs", "Dedup Review", "Email Template", "Contacts & Send"]
     cur = st.session_state.step
@@ -486,8 +642,12 @@ with tab_wizard:
             if st.button("🔍 Run Job Discovery Now", type="primary", use_container_width=True,
                          disabled=not selected_roles or not selected_locations):
                 with st.spinner(f"🔍 Searching job boards across {len(selected_roles) * len(selected_locations)} combinations… this can take up to a minute."):
-                    jobs = discover_jobs(roles=selected_roles, locations=selected_locations)
+                    raw_jobs = discover_jobs(roles=selected_roles, locations=selected_locations)
+                    # Drop mega-caps, staffing agencies and outsourcing shops before
+                    # they ever reach the review table.
+                    jobs, excluded = filter_companies(raw_jobs)
                     st.session_state.discovered_jobs = jobs
+                    st.session_state.discovery_excluded = excluded
                     # Clear all downstream state so Step 4 always reruns fresh
                     st.session_state.approved_after_dedup = None
                     st.session_state.enriched_leads = None
@@ -497,28 +657,54 @@ with tab_wizard:
         else:
             jobs = st.session_state.discovered_jobs
             st.success(f"Found **{len(jobs)}** companies hiring today.")
+
+            excluded = st.session_state.get("discovery_excluded") or []
+            if excluded:
+                st.caption(f"🚫 {len(excluded)} more were filtered out automatically "
+                           "(large global orgs, staffing agencies, outsourcing firms).")
+                with st.expander(f"See the {len(excluded)} filtered-out companies"):
+                    by_reason = {}
+                    for e in excluded:
+                        by_reason.setdefault(e.get("removed_reason", "—"), []).append(e["company_name"])
+                    for reason, names in by_reason.items():
+                        st.markdown(f"**{reason}** ({len(names)})")
+                        st.caption(", ".join(sorted(set(names))))
+                    st.caption("Tune these with the `EXCLUDED_COMPANIES` / `ALLOWED_COMPANIES` "
+                               "env vars — no code change needed.")
+
             st.subheader("Review & approve companies")
 
             selected = {}
-            header = st.columns([0.5, 2.5, 2.5, 2, 2])
-            for h, t in zip(header, ["", "Company", "Job Title", "Location", "Link"]):
+            header = st.columns([0.5, 2.8, 2.5, 1.5, 2.2])
+            for h, t in zip(header, ["", "Company", "Job Title", "Location", "Links"]):
                 h.markdown(f"**{t}**")
             st.divider()
 
             for i, job in enumerate(jobs):
-                col1, col2, col3, col4, col5 = st.columns([0.5, 2.5, 2.5, 2, 2])
+                col1, col2, col3, col4, col5 = st.columns([0.5, 2.8, 2.5, 1.5, 2.2])
                 with col1:
                     selected[i] = st.checkbox("", value=True, key=f"job_{i}")
                 with col2:
-                    st.write(f"**{job['company_name']}**")
+                    # Company name + a direct way to check who they actually are.
+                    links = company_links_md(job)
+                    st.markdown(f"**{job['company_name']}**" +
+                                (f"<br>{links}" if links else ""),
+                                unsafe_allow_html=True)
                 with col3:
                     st.write(job.get("job_title_hiring_for", "—"))
                 with col4:
                     st.write(job.get("location_query", "—"))
                 with col5:
+                    # apply_url is the real posting (LinkedIn / the company ATS);
+                    # job_url may still be a Google Jobs search link.
+                    apply_url = job.get("apply_url") or ""
                     url = job.get("job_url", "")
-                    if url:
-                        st.markdown(f"[View Job]({url})")
+                    if apply_url:
+                        src = job.get("job_source") or "posting"
+                        st.markdown(f"[📄 Apply on {src}]({apply_url})")
+                    elif url:
+                        st.markdown(f"[🔎 Search listing]({url})")
+                        st.caption("No direct link from this source")
                     else:
                         st.write(job.get("job_source", "—"))
 
@@ -547,7 +733,11 @@ with tab_wizard:
                 already_contacted = get_already_contacted(days=30)
                 blocked = existing_clients_set | already_contacted
 
-                removed, kept = [], []
+                # Re-apply the company filter here too: Step 1 already screens, but
+                # this also covers a session restored from before the rule existed.
+                jobs, filtered_out = filter_companies(jobs)
+
+                removed, kept = list(filtered_out), []
                 for job in jobs:
                     key = normalize(job.get("company_name", ""))
                     if key in existing_clients_set:
@@ -592,15 +782,26 @@ with tab_wizard:
         col1, col2 = st.columns(2)
         with col1:
             st.subheader(f"🚫 Removed ({len(removed)})")
+            _REASON_ICONS = {
+                "Existing Client": "🏢",
+                "Contacted in last 30 days": "🕐",
+                "Large / global enterprise": "🏙️",
+                "Staffing / recruiting firm": "🧑‍💼",
+                "IT services / outsourcing firm": "🛠️",
+                "Manually excluded": "✋",
+            }
             for r in removed:
-                icon = "🏢" if r['removed_reason'] == "Existing Client" else "🕐"
+                icon = _REASON_ICONS.get(r["removed_reason"], "🚫")
                 st.markdown(f"- {icon} ~~{r['company_name']}~~ — *{r['removed_reason']}*")
             if not removed:
                 st.info("No companies removed.")
         with col2:
             st.subheader(f"✅ Proceeding ({len(kept)})")
             for k in kept:
-                st.markdown(f"- **{k['company_name']}** — {k.get('job_title_hiring_for','')}")
+                links = company_links_md(k)
+                st.markdown(f"- **{k['company_name']}** — {k.get('job_title_hiring_for','')}"
+                            + (f"  {links}" if links else ""),
+                            unsafe_allow_html=True)
             if not kept:
                 st.warning("No companies left after dedup.")
 
@@ -740,9 +941,9 @@ with tab_wizard:
         if not companies:
             st.error("⚠️ No companies in the queue. Please go back and complete Steps 1–3.")
             if st.button("← Go back to Step 1", type="primary"):
-                for key in ["discovered_jobs", "approved_jobs", "dedup_removed", "dedup_kept",
-                            "approved_after_dedup", "enriched_leads", "final_leads"]:
-                    st.session_state[key] = None
+                _reset_wizard_state(["discovered_jobs", "approved_jobs", "discovery_excluded",
+                                     "dedup_removed", "dedup_kept", "approved_after_dedup",
+                                     "enriched_leads", "final_leads"])
                 st.session_state.step = 1
                 st.rerun()
         else:
@@ -909,7 +1110,14 @@ with tab_wizard:
                     send_flags[i] = st.checkbox("Send", value=has_name, key=f"send_{i}",
                                                 label_visibility="collapsed")
                 with col2:
-                    st.write(f"**{lead['company_name']}**")
+                    links = company_links_md(lead)
+                    st.markdown(f"**{lead['company_name']}**" +
+                                (f"<br>{links}" if links else ""),
+                                unsafe_allow_html=True)
+                    job_link = lead.get("apply_url") or lead.get("job_url")
+                    if job_link:
+                        st.markdown(f"<span style='font-size:.78rem'>[view role]({job_link})</span>",
+                                    unsafe_allow_html=True)
                 with col3:
                     name = lead.get("contact_name") or "—"
                     if not has_name:
@@ -1049,10 +1257,11 @@ with tab_wizard:
                 st.caption("📤 Delivered automatically by the background worker (scheduler) — no further action needed.")
 
                 if st.button("🔁 Start a New Outreach Run", type="primary", use_container_width=True):
-                    for key in ["discovered_jobs", "approved_jobs", "dedup_removed", "dedup_kept",
-                                "approved_after_dedup", "email_template_subject", "email_template_body",
-                                "enriched_leads", "final_leads"]:
-                        st.session_state[key] = None
+                    _reset_wizard_state(["discovered_jobs", "approved_jobs", "discovery_excluded",
+                                         "dedup_removed", "dedup_kept", "approved_after_dedup",
+                                         "email_template_subject", "email_template_body",
+                                         "enriched_leads", "final_leads", "schedule_preview",
+                                         "current_campaign_id"])
                     st.session_state.step = 1
                     st.session_state.send_complete = False
                     st.rerun()
@@ -1145,11 +1354,23 @@ with tab_approval:
             for w in waiting:
                 campaigns.setdefault(w.get("campaign_name", "—"), []).append(w)
 
+            # Send times are (re)calculated at approval, not when the batch was
+            # queued — so the schedule always runs forward from now.
+            _preview_first = _next_send_slot(datetime.now(timezone.utc)) \
+                .astimezone(PACIFIC).strftime("%b %d, %I:%M %p PT")
+            st.caption(f"⏱️ Approved emails are rescheduled from the moment you approve them — "
+                       f"the next available slot is **{_preview_first}** "
+                       "(weekdays, 8am–6pm PT, 1–3 min apart).")
+
             b1, b2 = st.columns(2)
             if b1.button(f"✅ Approve ALL {len(waiting)}", type="primary", use_container_width=True):
-                for w in waiting:
-                    supabase.table("email_queue").update({"status": "pending"}).eq("id", w["id"]).execute()
-                st.toast(f"Approved {len(waiting)} — they'll send on schedule.", icon="✅")
+                times = approve_and_reschedule(supabase, waiting)
+                first = times[0] if times else "—"
+                last = times[-1] if times else "—"
+                st.session_state["_flash"] = (
+                    f"Approved {len(waiting)} — sending {first} → {last}"
+                )
+                st.toast(f"Approved {len(waiting)} — first sends {first}.", icon="✅")
                 st.rerun()
             if b2.button(f"❌ Reject ALL {len(waiting)}", use_container_width=True):
                 for w in waiting:
@@ -1167,19 +1388,30 @@ with tab_approval:
                         subj, body = render_template(w.get("email_type", "intro"), lead)
                     except Exception:
                         subj, body = "—", "—"
+                    # Don't show the queue-time timestamp: it's stale the moment
+                    # the batch waits overnight. Show when it would actually go.
+                    queued_on = "—"
                     try:
-                        sched = datetime.fromisoformat(w["scheduled_for"].replace("Z", "+00:00")) \
-                            .astimezone(PACIFIC).strftime("%b %d, %I:%M %p PT")
+                        queued_on = datetime.fromisoformat(
+                            (w.get("created_at") or w["scheduled_for"]).replace("Z", "+00:00")
+                        ).astimezone(PACIFIC).strftime("%b %d")
                     except Exception:
-                        sched = "—"
+                        pass
 
+                    links = company_links_md(lead)
                     with st.container():
                         c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
-                        c1.markdown(f"**{lead.get('company_name','—')}** → {lead.get('contact_name') or lead.get('contact_email','—')}  \n"
-                                    f"<span style='color:#6b7280;font-size:0.85rem'>{lead.get('contact_email','')} · sends {sched}</span>",
-                                    unsafe_allow_html=True)
+                        c1.markdown(
+                            f"**{lead.get('company_name','—')}** → "
+                            f"{lead.get('contact_name') or lead.get('contact_email','—')}  \n"
+                            f"<span style='color:#6b7280;font-size:0.85rem'>"
+                            f"{lead.get('contact_email','')} · queued {queued_on} · "
+                            f"sends once approved</span>"
+                            + (f"<br>{links}" if links else ""),
+                            unsafe_allow_html=True)
                         if c2.button("✅ Approve", key=f"appr_{w['id']}", use_container_width=True):
-                            supabase.table("email_queue").update({"status": "pending"}).eq("id", w["id"]).execute()
+                            new_times = approve_and_reschedule(supabase, [w])
+                            st.toast(f"Approved — sends {new_times[0]}.", icon="✅")
                             st.rerun()
                         if c3.button("❌ Reject", key=f"rej_{w['id']}", use_container_width=True):
                             supabase.table("email_queue").update({"status": "cancelled"}).eq("id", w["id"]).execute()
@@ -1259,7 +1491,12 @@ with tab_history:
                     campaign = item.get("campaign_name", "—")
                     try:
                         sched_dt = datetime.fromisoformat(sched.replace("Z", "+00:00")).astimezone(PACIFIC)
-                        time_str = sched_dt.strftime("%I:%M %p PT")
+                        # A slot in the past means the worker hasn't picked it up
+                        # yet — say that instead of showing a stale timestamp.
+                        if sched_dt <= datetime.now(PACIFIC):
+                            time_str = "Due now"
+                        else:
+                            time_str = sched_dt.strftime("%b %d, %I:%M %p PT")
                     except Exception:
                         time_str = "—"
                     try:
@@ -1562,8 +1799,10 @@ with tab_queue:
         for item in rows:
             lead = item.get("lead_data", {}) or {}
             try:
-                sched = datetime.fromisoformat(item["scheduled_for"].replace("Z", "+00:00")) \
-                    .astimezone(PACIFIC).strftime("%b %d, %I:%M %p")
+                _dt = datetime.fromisoformat(item["scheduled_for"].replace("Z", "+00:00")) \
+                    .astimezone(PACIFIC)
+                sched = ("Due now" if _dt <= datetime.now(PACIFIC)
+                         else _dt.strftime("%b %d, %I:%M %p"))
             except Exception:
                 sched = "—"
             c1, c2, c3, c4, c5 = st.columns([2, 2, 2.5, 1.5, 1])
@@ -1778,3 +2017,9 @@ with tab_analytics:
         )
     except Exception as e:
         st.error(f"Could not load analytics: {e}")
+
+
+# ── Persist the wizard so a disconnect/refresh does not lose the run ──────────
+# Runs last, after every tab has had a chance to mutate state. No-ops unless
+# something actually changed since the previous rerun.
+_persist_wizard_state()

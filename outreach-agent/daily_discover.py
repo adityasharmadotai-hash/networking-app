@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 from supabase import create_client
 
 from agent.job_discovery import discover_jobs
+from agent.company_filter import filter_companies
 from agent.dedup import get_existing_clients, get_already_contacted, normalize
 from agent.contact_finder import prospect_contact
 from agent.suppression import get_unsubscribed_emails
@@ -67,7 +68,8 @@ def _save_lead(sb, lead) -> str:
     row = {
         "company_name": lead["company_name"],
         "job_title_hiring_for": lead.get("job_title_hiring_for"),
-        "job_url": lead.get("job_url"),
+        # Prefer the direct posting over a Google Jobs search link.
+        "job_url": lead.get("apply_url") or lead.get("job_url"),
         "job_source": lead.get("job_source"),
         "contact_name": lead.get("contact_name"),
         "contact_title": lead.get("contact_title"),
@@ -85,6 +87,17 @@ def run_daily_discovery():
 
     jobs = discover_jobs(roles=ROLES, locations=LOCATIONS)
     print(f"[Daily] {len(jobs)} jobs discovered")
+
+    # Skip mega-caps with big centralised recruiting orgs, and third-party
+    # staffing / outsourcing firms — we only want direct employers.
+    jobs, filtered_out = filter_companies(jobs)
+    if filtered_out:
+        by_reason = {}
+        for f in filtered_out:
+            by_reason.setdefault(f["removed_reason"], []).append(f["company_name"])
+        for reason, names in by_reason.items():
+            print(f"[Daily] Filtered {len(names)} — {reason}: {', '.join(sorted(set(names))[:8])}")
+    print(f"[Daily] {len(jobs)} companies after company filter")
 
     blocked = get_existing_clients() | get_already_contacted(days=30)
     kept = [j for j in jobs if normalize(j.get("company_name", "")) not in blocked]
