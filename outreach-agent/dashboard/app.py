@@ -445,15 +445,28 @@ def approve_and_reschedule(supabase, items: list[dict]) -> list[str]:
 
 
 def company_links_md(item: dict) -> str:
-    """Small ' · 🔗 LinkedIn · 🌐 Site' link row rendered under a company name.
-    Gives the reviewer a one-click way to check who the company actually is."""
+    """Small link row rendered under a company name, so the reviewer can check
+    who the company actually is in one click.
+
+    The LinkedIn link is labelled honestly: when it is an exact
+    /company/<slug> page it says 'LinkedIn', and when all we could get is a
+    name search it says 'LinkedIn search' - a search page full of
+    similarly-named companies is not the same thing as the company.
+    """
     bits = []
-    li = item.get("company_linkedin_url")
-    web = item.get("company_website")
+    li      = item.get("company_linkedin_url")
+    web     = item.get("company_website")
+    profile = item.get("company_profile_url")
     if li:
-        bits.append(f"[🔗 LinkedIn]({li})")
+        exact = "/company/" in li
+        bits.append(f"[🔗 LinkedIn]({li})" if exact
+                    else f"[🔎 LinkedIn search]({li})")
     if web:
         bits.append(f"[🌐 Site]({web})")
+    # Fallback for sources (The Muse) that expose a company profile but never
+    # the official website - the profile page carries the logo and description.
+    if profile and not web:
+        bits.append(f"[ℹ️ Company profile]({profile})")
     if not bits:
         return ""
     return "<span style='font-size:.78rem'>" + " · ".join(bits) + "</span>"
@@ -477,6 +490,10 @@ _DEFAULT_STATE = {
     "enriched_leads": None,
     "final_leads": None,
     "send_complete": False,
+    # company -> the contact we already paid SerpAPI + Wiza to find. Survives
+    # stepping back and forth in the wizard, which used to throw the results
+    # away and re-run the whole (quota-limited, non-deterministic) search.
+    "contact_cache": {},
     "schedule_preview": None,
     "current_campaign_id": None,
     "active_tab": "Outreach Wizard",
@@ -502,7 +519,7 @@ _PERSIST_KEYS = [
     "recently_contacted_count", "approved_after_dedup",
     "email_template_subject", "email_template_body", "followup_templates",
     "email_limit", "enriched_leads", "final_leads", "send_complete",
-    "schedule_preview", "current_campaign_id",
+    "schedule_preview", "current_campaign_id", "contact_cache",
 ]
 
 
@@ -1044,6 +1061,14 @@ with tab_wizard:
                 log_lines = []
                 results = []
 
+                # Contacts already found in an earlier pass are reused as-is.
+                # A LinkedIn search + Wiza reveal costs quota and is not
+                # deterministic - a rate-limited retry can come back empty - so
+                # re-running the step used to LOSE contacts it had already paid
+                # for. Failures are always retried; only successes are reused.
+                contact_cache = st.session_state.get("contact_cache") or {}
+                reused_ct = 0
+
                 def add_log(msg):
                     log_lines.append(msg)
                     log_placeholder.markdown("\n\n".join(log_lines[-30:]))
@@ -1052,6 +1077,18 @@ with tab_wizard:
                     company = job["company_name"]
                     status_text.text(f"Looking up {company}... ({i+1}/{limit})")
                     contact = None
+
+                    cache_key = normalize(company)
+                    cached = (contact_cache.get(cache_key) or {}).get("contact") or {}
+                    if cached.get("contact_email"):
+                        job.update(cached)
+                        add_log(f"**{company}** — ♻️ reusing the contact found earlier "
+                                f"(`{cached['contact_email']}`) — no API quota spent")
+                        results.append(job)
+                        reused_ct += 1
+                        progress.progress((i + 1) / limit)
+                        continue
+
                     add_log(f"**{company}** — searching LinkedIn via SerpAPI (Google)...")
                     try:
                         linkedin_url = None
@@ -1094,6 +1131,11 @@ with tab_wizard:
                             job["contact_email"] = None
                         else:
                             job.update(contact)
+                            # Bank the win so stepping back cannot lose it.
+                            contact_cache[cache_key] = {
+                                "contact": contact,
+                                "at": datetime.now(timezone.utc).isoformat(),
+                            }
                     else:
                         job["contact_email"] = None
                     results.append(job)
@@ -1101,18 +1143,33 @@ with tab_wizard:
 
                 status_text.text("✅ Contact lookup complete!")
                 st.session_state.enriched_leads = results
+                st.session_state.contact_cache = contact_cache
                 _found_ct = len([j for j in results if j.get("contact_email")])
-                st.toast(f"Contact lookup complete — {_found_ct} contact(s) found", icon="✅")
+                _msg = f"Contact lookup complete — {_found_ct} contact(s) found"
+                if reused_ct:
+                    _msg += f" ({reused_ct} reused from an earlier run)"
+                st.toast(_msg, icon="✅")
 
             leads = st.session_state.enriched_leads
             found = [l for l in leads if l.get("contact_email")]
             not_found = [l for l in leads if not l.get("contact_email")]
 
-            mc1, mc2, mc3 = st.columns(3)
+            mc1, mc2, mc3, mc4 = st.columns(4)
             mc1.metric("✅ Contacts found", len(found))
             mc2.metric("❌ Skipped (no contact)", len(not_found))
             mc3.metric("📇 Companies searched", len(leads))
-            st.caption("Contacts found are ready to email. Companies with no contact are skipped automatically.")
+            mc4.metric("💾 Cached contacts", len(st.session_state.get("contact_cache") or {}))
+            st.caption("Contacts found are ready to email. Companies with no contact are skipped "
+                       "automatically. Found contacts are cached, so stepping back and re-running "
+                       "this step reuses them instead of spending SerpAPI/Wiza quota again.")
+
+            if st.session_state.get("contact_cache"):
+                if st.button("🗑️ Clear cached contacts and search again",
+                             help="Only do this if a cached contact has gone stale — "
+                                  "it spends quota to look every company up from scratch."):
+                    st.session_state.contact_cache = {}
+                    st.session_state.enriched_leads = None
+                    st.rerun()
 
             if not_found:
                 with st.expander(f"❌ {len(not_found)} companies skipped (no contact found)"):

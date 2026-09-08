@@ -9,8 +9,10 @@ Fallback sources (used automatically when SerpAPI quota is exhausted):
 """
 
 import os
+import re
 import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 import requests
 import feedparser
 from bs4 import BeautifulSoup
@@ -214,6 +216,136 @@ _EMPLOYMENT_LABELS = (
 )
 
 
+# ── LinkedIn posting lookup ─────────────────────────────────────────────────
+# SerpAPI hands us LinkedIn *job* links but never the company page, so
+# company_linkedin_url used to degrade to a name search that returns a page of
+# similarly-named companies (the "Blueprints AI" problem). LinkedIn's guest
+# jobPosting endpoint needs no auth and carries three things we want:
+#   * the exact /company/<slug> link  -> the right company, with its logo
+#   * the posting's employment type   -> full-time-only filtering
+#   * the company's industry          -> catches staffing agencies whose name
+#                                        gives nothing away (Skyrocket Ventures,
+#                                        Crossing Hurdles, Lumicity, ...)
+# Set RESOLVE_LINKEDIN_DETAILS=false to turn the whole pass off.
+
+_RESOLVE_LINKEDIN = os.getenv("RESOLVE_LINKEDIN_DETAILS", "true").lower() != "false"
+
+# Matches both "…/jobs/view/1234567890" and the slugged
+# "…/jobs/view/ai-engineer-at-acme-1234567890" form.
+_LINKEDIN_JOB_RE = re.compile(r"linkedin\.com/jobs/view/(?:[^/?#]*-)?(\d{6,})")
+
+# job id -> details dict, so re-running discovery in one process is free.
+_li_details_cache: dict[str, dict] = {}
+
+# LinkedIn's employment type is usually right, but a minority of postings leave
+# it on a nonsense default ("Volunteer" on a senior engineering role). We take
+# the values below and ignore the rest: "Full-time" is worth keeping because it
+# outranks the job-title heuristic and protects a real role whose title happens
+# to contain a word like "contract".
+_TRUSTED_LI_EMPLOYMENT = {"full-time", "internship", "part-time", "contract",
+                          "temporary"}
+
+
+def _linkedin_job_id(*urls: str) -> str:
+    for url in urls:
+        if not url:
+            continue
+        m = _LINKEDIN_JOB_RE.search(url)
+        if m:
+            return m.group(1)
+    return ""
+
+
+def _linkedin_posting_details(job_id: str) -> dict:
+    """Company page, employment type and industries for one LinkedIn posting.
+
+    Returns {} on any failure - a missing link is better than a wrong one, and
+    discovery must never fail because LinkedIn rate-limited us.
+    """
+    if job_id in _li_details_cache:
+        return _li_details_cache[job_id]
+
+    details: dict = {}
+    try:
+        resp = requests.get(
+            f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job_id}",
+            headers=_LINKEDIN_HEADERS,
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, "html.parser")
+
+            org = (soup.find("a", class_="topcard__org-name-link")
+                   or soup.select_one('a[href*="linkedin.com/company/"]'))
+            if org and org.get("href"):
+                href = org["href"].split("?")[0]
+                if "linkedin.com/company/" in href:
+                    details["company_linkedin_url"] = href
+
+            for item in soup.select("li.description__job-criteria-item"):
+                head, val = item.select_one("h3"), item.select_one("span")
+                if not (head and val):
+                    continue
+                label = head.get_text(strip=True).lower()
+                text = val.get_text(strip=True)
+                if "employment type" in label:
+                    details["employment_type"] = text
+                elif "industries" in label:
+                    details["company_industries"] = text
+    except Exception as e:
+        print(f"[Job Discovery] LinkedIn posting lookup failed for {job_id}: {e}")
+
+    _li_details_cache[job_id] = details
+    return details
+
+
+def _enrich_from_linkedin(jobs: list[dict], max_workers: int = 6,
+                          max_lookups: int = 80) -> None:
+    """Fill in exact company page / employment type / industry, in parallel.
+
+    Only touches jobs that actually need it, so a run where every source already
+    supplied a real company link costs nothing.
+    """
+    if not _RESOLVE_LINKEDIN:
+        return
+
+    targets = []
+    for job in jobs:
+        job_id = _linkedin_job_id(job.get("apply_url", ""), job.get("job_url", ""))
+        if not job_id:
+            continue
+        # A search URL is a placeholder, not a real company page - always replace it.
+        needs_company = "/search/results/" in (job.get("company_linkedin_url") or "")
+        needs_type = not job.get("employment_type")
+        needs_industry = not job.get("company_industries")
+        if needs_company or needs_type or needs_industry:
+            targets.append((job, job_id))
+
+    if not targets:
+        return
+
+    targets = targets[:max_lookups]
+    print(f"[Job Discovery] Resolving {len(targets)} LinkedIn postings "
+          f"(exact company page, employment type, industry)...")
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        details_list = list(pool.map(lambda t: _linkedin_posting_details(t[1]), targets))
+
+    resolved = 0
+    for (job, _), details in zip(targets, details_list):
+        if details.get("company_linkedin_url"):
+            job["company_linkedin_url"] = details["company_linkedin_url"]
+            resolved += 1
+        if not job.get("employment_type") and details.get("employment_type"):
+            # Only trust the values that LinkedIn sets reliably.
+            if details["employment_type"].strip().lower() in _TRUSTED_LI_EMPLOYMENT:
+                job["employment_type"] = details["employment_type"]
+        if details.get("company_industries"):
+            job["company_industries"] = details["company_industries"]
+
+    print(f"[Job Discovery] {resolved}/{len(targets)} exact LinkedIn company pages resolved.")
+
+
 def _employment_from_serpapi(job: dict) -> str:
     """Google Jobs puts it in detected_extensions.schedule_type, and repeats it
     as a plain string inside extensions."""
@@ -403,6 +535,12 @@ def _search_muse(role: str, location: str = None, num: int = 10) -> list[dict]:
                     "job_url":              url,
                     "apply_url":            url,
                     "job_source":           "The Muse",
+                    # Muse never exposes the official website, but its company
+                    # profile page does ("view company profile") - logo,
+                    # description and size, which is what the review needs.
+                    "company_profile_url":  (f"https://www.themuse.com/companies/"
+                                             f"{company_obj.get('short_name', '')}"
+                                             if company_obj.get("short_name") else ""),
                     "employment_type":      "Internship" if "intern" in levels.lower() else "",
                     "funding_signal":       funding_signal(j.get("contents", "")),
                     "role_query":           role,
@@ -526,6 +664,10 @@ def discover_jobs(
 
             # Small delay to be polite to free APIs
             time.sleep(0.5)
+
+    # One parallel pass over the LinkedIn postings, after dedup, so we never
+    # look up the same company twice.
+    _enrich_from_linkedin(all_jobs)
 
     print(f"[Job Discovery] ✅ Found {len(all_jobs)} unique companies hiring.")
     return all_jobs

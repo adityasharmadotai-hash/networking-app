@@ -84,7 +84,10 @@ ENTERPRISE_COMPANIES = {
     "nike", "disney", "comcast", "verizon", "t mobile", "boeing",
     "lockheed martin", "raytheon", "northrop grumman", "general electric",
     "general motors", "ford motor", "johnson johnson", "pfizer", "merck",
-    "unitedhealth", "cvs health",
+    "unitedhealth", "optum", "cvs health",
+    # large government / defence systems integrators, same centralised-TA shape
+    "booz allen hamilton", "leidos", "saic", "caci", "general dynamics",
+    "l3harris", "peraton", "mitre", "guidehouse", "parsons corporation",
     # big consultancies / professional services (huge + centralised)
     "accenture", "pwc", "pricewaterhousecoopers", "ernst young", "kpmg",
     "mckinsey company", "bain company", "boston consulting group",
@@ -136,6 +139,18 @@ STAFFING_FIRMS = {
     # "Jack Henry & Associates" is not caught by the recruiting platform "Jack")
     "alku", "life at alku", "alex", "alex ai", "hire alex", "jack",
     "search with jack", "metantz", "harrison clarke", "radley james", "xcede",
+    # slipped through a live run - none of these carry an obvious keyword
+    "skyrocket ventures", "crossing hurdles", "lumicity",
+    # boutique tech/AI agencies in the same bracket
+    "understanding recruitment", "trust in soda", "mission recruit",
+    "third republic", "eteam workforce", "phaidon international",
+    "selby jennings", "glocomms", "larson maddox", "dsj global",
+    "ea first", "adroit people", "talentburst", "russell tobin",
+    "pride global", "aditi consulting", "system soft technologies",
+    "kellton tech", "photon interactive", "sapphire software solutions",
+    "clovity", "smart it frame", "acceler8 talent", "premier group",
+    "kanda tech", "spectrum staffing", "jefferson frank", "tenth revolution",
+    "nigel frank international", "mason frank", "washington frank",
 }
 
 # Large IT-services / outsourcing shops - technically employers, but the role is
@@ -158,6 +173,26 @@ SERVICES_KEYWORDS = (
     "outsourcing", "it services", "it consulting", "software consulting",
     "consultancy", "consultants", "managed services", "systems integrator",
 )
+
+
+# LinkedIn tags every company with an industry, and that is a far better
+# staffing signal than the name is: "Skyrocket Ventures", "Crossing Hurdles" and
+# "Lumicity" all read like product companies but are classified as
+# "Staffing and Recruiting". agent/job_discovery.py reads this off the posting.
+STAFFING_INDUSTRIES = (
+    "staffing", "recruiting", "recruitment", "executive search",
+)
+
+
+def industry_exclusion_reason(industries: str) -> str | None:
+    """Screen on the company's LinkedIn industry, when we managed to read it."""
+    val = _norm(industries)
+    if not val:
+        return None
+    for kw in STAFFING_INDUSTRIES:
+        if _contains_phrase(val, kw):
+            return REASON_STAFFING
+    return None
 
 
 # -- 4. Mature in-house talent orgs ------------------------------------------
@@ -400,9 +435,19 @@ def role_exclusion_reason(job: dict) -> str | None:
 
 
 def job_exclusion_reason(job: dict) -> str | None:
-    """Company-level and role-level rules combined, company checked first."""
-    return (exclusion_reason(job.get("company_name", ""))
-            or role_exclusion_reason(job))
+    """Every rule, in order: company name, LinkedIn industry, then the role."""
+    reason = exclusion_reason(job.get("company_name", ""))
+    if reason:
+        return reason
+
+    # The allow-list has to win here too, or a force-allowed company could still
+    # be dropped on its industry.
+    if not _is_allowed(_norm(job.get("company_name", ""))):
+        reason = industry_exclusion_reason(job.get("company_industries", ""))
+        if reason:
+            return reason
+
+    return role_exclusion_reason(job)
 
 
 def is_excluded(company_name: str) -> bool:
