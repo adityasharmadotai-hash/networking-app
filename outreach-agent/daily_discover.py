@@ -88,8 +88,9 @@ def run_daily_discovery():
     jobs = discover_jobs(roles=ROLES, locations=LOCATIONS)
     print(f"[Daily] {len(jobs)} jobs discovered")
 
-    # Skip mega-caps with big centralised recruiting orgs, and third-party
-    # staffing / outsourcing firms — we only want direct employers.
+    # Skip mega-caps and companies with mature in-house talent orgs, third-party
+    # staffing / outsourcing firms, stealth and very early-stage companies, and
+    # anything that is not a full-time role — we only want direct employers.
     jobs, filtered_out = filter_companies(jobs)
     if filtered_out:
         by_reason = {}

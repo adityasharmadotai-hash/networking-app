@@ -16,6 +16,8 @@ import feedparser
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
+from agent.company_filter import funding_signal
+
 load_dotenv()
 
 def _get_secret(key: str, default: str = "") -> str:
@@ -201,6 +203,30 @@ def _attach_company_links(job: dict) -> dict:
     return job
 
 
+# Employment type is what lets us keep full-time roles only. Every source names
+# it differently (or not at all), so each parser normalises into one field and
+# company_filter decides. "" means "the source did not say" - the filter then
+# falls back to reading the job title.
+
+_EMPLOYMENT_LABELS = (
+    "Full-time", "Part-time", "Contractor", "Contract", "Internship",
+    "Temporary", "Volunteer", "Per diem", "Seasonal", "Apprenticeship",
+)
+
+
+def _employment_from_serpapi(job: dict) -> str:
+    """Google Jobs puts it in detected_extensions.schedule_type, and repeats it
+    as a plain string inside extensions."""
+    sched = (job.get("detected_extensions") or {}).get("schedule_type", "")
+    if sched:
+        return str(sched)
+    for ext in (job.get("extensions") or []):
+        for label in _EMPLOYMENT_LABELS:
+            if label.lower() == str(ext).strip().lower():
+                return label
+    return ""
+
+
 # ─────────────────────────── SerpAPI ────────────────────────────────────────
 
 _serpapi_quota_exhausted = False  # module-level flag; reset on each process start
@@ -259,6 +285,10 @@ def _parse_serpapi_job(job: dict, role: str, location: str) -> dict:
         "apply_url":            apply_url,
         "company_website":      company_site,
         "job_source":           job.get("via", "google_jobs").replace("via ", ""),
+        "employment_type":      _employment_from_serpapi(job),
+        # Keep the label, not the description - the description would bloat the
+        # persisted wizard state for no extra benefit.
+        "funding_signal":       funding_signal(job.get("description", "")),
         "role_query":           role,
         "location_query":       location or "Any",
     })
@@ -324,6 +354,10 @@ def _search_linkedin(role: str, location: str = None, num: int = 10) -> list[dic
                 "apply_url":            job_url,
                 "company_linkedin_url": company_linkedin,
                 "job_source":           "LinkedIn",
+                # The guest search cards carry no employment type, so the filter
+                # falls back to the job title for the full-time-only rule.
+                "employment_type":      "",
+                "funding_signal":       "",
                 "role_query":           role,
                 "location_query":       location or "Any",
             }))
@@ -359,6 +393,9 @@ def _search_muse(role: str, location: str = None, num: int = 10) -> list[dict]:
             company = company_obj.get("name", "").strip()
             title   = j.get("name", "").strip()
             url     = j.get("refs", {}).get("landing_page", "")
+            # Muse has no employment_type field; `levels` is where an
+            # internship/entry distinction shows up.
+            levels  = " ".join((lv or {}).get("name", "") for lv in (j.get("levels") or []))
             if company and title:
                 jobs.append(_attach_company_links({
                     "company_name":         company,
@@ -366,6 +403,8 @@ def _search_muse(role: str, location: str = None, num: int = 10) -> list[dict]:
                     "job_url":              url,
                     "apply_url":            url,
                     "job_source":           "The Muse",
+                    "employment_type":      "Internship" if "intern" in levels.lower() else "",
+                    "funding_signal":       funding_signal(j.get("contents", "")),
                     "role_query":           role,
                     "location_query":       location or "Any",
                 }))
@@ -409,6 +448,10 @@ def _search_adzuna(role: str, location: str = None, num: int = 10) -> list[dict]
             company = (j.get("company") or {}).get("display_name", "").strip()
             title   = j.get("title", "").strip()
             url     = j.get("redirect_url", "")
+            # Adzuna splits it in two: contract_time is full_time/part_time,
+            # contract_type is permanent/contract.
+            employment = " ".join(x for x in (j.get("contract_time", ""),
+                                              j.get("contract_type", "")) if x)
             if company and title:
                 jobs.append(_attach_company_links({
                     "company_name":         company,
@@ -416,6 +459,8 @@ def _search_adzuna(role: str, location: str = None, num: int = 10) -> list[dict]
                     "job_url":              url,
                     "apply_url":            url,
                     "job_source":           "Adzuna",
+                    "employment_type":      employment.replace("_", " "),
+                    "funding_signal":       funding_signal(j.get("description", "")),
                     "role_query":           role,
                     "location_query":       location or "Any",
                 }))

@@ -57,6 +57,9 @@ SUPABASE_URL = _secret("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = _secret("SUPABASE_SERVICE_ROLE_KEY")
 DAILY_EMAIL_LIMIT = int(_secret("DAILY_EMAIL_LIMIT", "20"))
 FOLLOWUP_INTERVAL_DAYS = int(_secret("FOLLOWUP_INTERVAL_DAYS", "3"))
+# Keep in step with scheduler.py / main.py - History shows the follow-ups
+# still to come, so a stale cap here promises emails that never get sent.
+MAX_FOLLOWUPS = int(_secret("MAX_FOLLOWUPS", "2"))
 
 st.markdown("""
 <style>
@@ -328,6 +331,27 @@ with st.sidebar:
 @st.cache_resource
 def get_supabase():
     return create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+
+
+def fetch_all_rows(supabase, table: str, columns: str,
+                   order_col: str = None, desc: bool = False,
+                   page: int = 1000) -> list[dict]:
+    """Read every row of a table, a page at a time.
+
+    PostgREST caps a single response at 1000 rows. History used to read
+    `emails_sent` in one shot, so once the account passed 1000 sent emails the
+    oldest campaigns silently vanished from the page.
+    """
+    rows, start = [], 0
+    while True:
+        q = supabase.table(table).select(columns)
+        if order_col:
+            q = q.order(order_col, desc=desc)
+        chunk = q.range(start, start + page - 1).execute().data or []
+        rows.extend(chunk)
+        if len(chunk) < page:
+            return rows
+        start += page
 
 
 def log_activity(supabase, event_type, description, lead_id=None):
@@ -661,7 +685,9 @@ with tab_wizard:
             excluded = st.session_state.get("discovery_excluded") or []
             if excluded:
                 st.caption(f"🚫 {len(excluded)} more were filtered out automatically "
-                           "(large global orgs, staffing agencies, outsourcing firms).")
+                           "(large global orgs, mature in-house talent teams, staffing "
+                           "agencies, outsourcing firms, stealth/early-stage companies, "
+                           "and anything that isn't a full-time role).")
                 with st.expander(f"See the {len(excluded)} filtered-out companies"):
                     by_reason = {}
                     for e in excluded:
@@ -692,6 +718,12 @@ with tab_wizard:
                                 unsafe_allow_html=True)
                 with col3:
                     st.write(job.get("job_title_hiring_for", "—"))
+                    # Funding/stage hint pulled from the posting text. Advisory
+                    # only — it never filters, it just helps you spot the
+                    # funded, growing companies worth the outreach.
+                    stage = job.get("funding_signal")
+                    if stage:
+                        st.caption(f"💰 {stage}")
                 with col4:
                     st.write(job.get("location_query", "—"))
                 with col5:
@@ -1440,15 +1472,54 @@ with tab_history:
         from collections import defaultdict
         supabase = get_supabase()
 
-        all_emails = supabase.table("emails_sent") \
-            .select("id, lead_id, email_type, to_email, to_name, subject, sent_at, gmail_message_id") \
-            .order("sent_at", desc=True).execute().data
+        # `campaign_id` on emails_sent and the reply-tracking columns on leads
+        # arrived in later migrations (supabase/campaigns_migration.sql). Ask for
+        # them, but fall back to the base columns so History still renders on a
+        # database where that migration has not been applied yet.
+        _EMAIL_COLS = ("id, lead_id, email_type, to_email, to_name, subject, "
+                       "sent_at, gmail_message_id")
+        _LEAD_COLS  = ("id, company_name, contact_name, contact_email, "
+                       "contact_linkedin_url, contact_title, status, "
+                       "followup_count, next_followup_date")
+        missing_cols = []
 
-        all_leads = supabase.table("leads") \
-            .select("id, company_name, contact_name, contact_email, contact_linkedin_url, contact_title, status") \
-            .execute().data
+        try:
+            all_emails = fetch_all_rows(supabase, "emails_sent",
+                                        _EMAIL_COLS + ", campaign_id",
+                                        "sent_at", True)
+        except Exception:
+            missing_cols.append("emails_sent.campaign_id")
+            all_emails = fetch_all_rows(supabase, "emails_sent", _EMAIL_COLS,
+                                        "sent_at", True)
+
+        try:
+            all_leads = fetch_all_rows(supabase, "leads",
+                                       _LEAD_COLS + ", response_status, response_snippet")
+        except Exception:
+            missing_cols.append("leads.response_status")
+            all_leads = fetch_all_rows(supabase, "leads", _LEAD_COLS)
 
         leads_map = {l["id"]: l for l in all_leads}
+
+        # The campaign *name* is only ever written to email_queue, so that is
+        # where History has to read it from - emails_sent carries the id alone.
+        queue = []
+        campaign_names = {}
+        try:
+            queue = fetch_all_rows(supabase, "email_queue", "*", "scheduled_for")
+            for q in queue:
+                if q.get("campaign_id") and q.get("campaign_name"):
+                    campaign_names.setdefault(q["campaign_id"], q["campaign_name"])
+        except Exception as e:
+            st.caption(f"Could not read the email queue: {e}")
+
+        if missing_cols:
+            st.warning(
+                "Some columns are missing from Supabase, so campaign grouping and "
+                "reply tracking are limited here: **" + ", ".join(missing_cols) +
+                "**. Run `supabase/campaigns_migration.sql` in the Supabase SQL "
+                "editor to enable them."
+            )
 
         # ── All-time summary stats ────────────────────────────────────────────
         st.subheader("📊 All-Time Summary")
@@ -1471,8 +1542,7 @@ with tab_history:
 
         # ── Pending queue ─────────────────────────────────────────────────────
         try:
-            queue = supabase.table("email_queue").select("*").order("scheduled_for").execute().data
-            pending = [q for q in queue if q["status"] == "pending"]
+            pending = [q for q in queue if q.get("status") == "pending"]
             if pending:
                 q_col1, q_col2 = st.columns([4, 1])
                 with q_col1:
@@ -1571,9 +1641,14 @@ with tab_history:
                 people_ct   = len({e["to_email"] for e in c_emails if e.get("to_email")})
                 success_rate= f"{round(len(delivered)/len(c_emails)*100)}%" if c_emails else "—"
 
-                # Get campaign name
+                # Campaign name: email_queue is the only table that stores it.
                 sample = c_emails[0]
-                camp_name = sample.get("campaign_name") or fmt_dt(sample.get("sent_at",""))
+                camp_name = (campaign_names.get(cid)
+                             or sample.get("campaign_name")
+                             or fmt_dt(sample.get("sent_at", "")))
+                # Rows grouped by send date (no campaign_id) have no queue row
+                # to rename, so the control is hidden for them.
+                renameable = bool(sample.get("campaign_id"))
 
                 with st.expander(
                     f"🚀 **{camp_name}** &nbsp;|&nbsp; "
@@ -1588,23 +1663,36 @@ with tab_history:
                     mc3.metric("✅ Delivered", len(delivered))
                     mc4.metric("❌ Failed", len(failed))
 
-                    # Rename lives in its own control, not crammed into the metric row.
-                    with st.expander("✏️ Rename this campaign"):
-                        new_camp_name = st.text_input(
+                    # Rename lives behind a toggle, NOT a nested expander -
+                    # Streamlit refuses to nest expanders and the exception took
+                    # the whole History tab down with it.
+                    if renameable and st.checkbox("✏️ Rename this campaign",
+                                                  key=f"rename_toggle_{cid}"):
+                        rn1, rn2 = st.columns([4, 1])
+                        new_camp_name = rn1.text_input(
                             "Campaign name",
                             value=camp_name,
                             key=f"rename_{cid}",
                             label_visibility="collapsed",
                             placeholder="Rename this campaign..."
                         )
-                        if new_camp_name != camp_name and st.button("Save name", key=f"save_name_{cid}"):
-                            try:
-                                supabase.table("email_queue").update({"campaign_name": new_camp_name}).eq("campaign_id", cid).execute()
-                                supabase.table("emails_sent").update({"campaign_name": new_camp_name}).eq("campaign_id", cid).execute() if hasattr(supabase.table("emails_sent"), "campaign_name") else None
-                                st.success("✅ Campaign renamed!")
-                                st.rerun()
-                            except Exception:
-                                pass
+                        if rn2.button("Save name", key=f"save_name_{cid}",
+                                      use_container_width=True):
+                            if not new_camp_name.strip():
+                                st.warning("Give the campaign a name first.")
+                            elif new_camp_name == camp_name:
+                                st.info("That is already the name.")
+                            else:
+                                try:
+                                    # email_queue is the table that holds the
+                                    # name; emails_sent only stores campaign_id.
+                                    supabase.table("email_queue") \
+                                        .update({"campaign_name": new_camp_name}) \
+                                        .eq("campaign_id", cid).execute()
+                                    st.success("✅ Campaign renamed.")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Rename failed: {e}")
                     st.markdown("---")
 
                     # Shared column widths so the header and every data row line up.
@@ -1647,12 +1735,12 @@ with tab_history:
                         pending_lines = []
                         if lead.get("status") in ("emailed", "following_up") and \
                            lead.get("response_status") not in ("positive","negative","bounced") and \
-                           followup_count < 5 and next_followup_date:
+                           followup_count < MAX_FOLLOWUPS and next_followup_date:
                             try:
                                 next_dt = datetime.fromisoformat(next_followup_date).replace(tzinfo=timezone.utc)
-                                for i in range(followup_count + 1, 3):
+                                for i in range(followup_count + 1, MAX_FOLLOWUPS + 1):
                                     label = EMAIL_TYPE_LABELS.get(f"followup_{i}", f"Follow-up {i}")
-                                    days_offset = (i - followup_count - 1) * 3
+                                    days_offset = (i - followup_count - 1) * FOLLOWUP_INTERVAL_DAYS
                                     send_date = next_dt + timedelta(days=days_offset)
                                     pending_lines.append(f"⏳ {label} — {send_date.astimezone(PACIFIC).strftime('%b %d')}")
                             except Exception:
