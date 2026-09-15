@@ -27,6 +27,11 @@ TTL_DAYS = int(os.getenv("WIZARD_SESSION_TTL_DAYS", "14"))
 
 _LOCAL_DIR = os.path.join(tempfile.gettempdir(), "hiregen_sessions")
 
+# Last Supabase failure, or None when the most recent call succeeded. The
+# local file is NOT durable on Streamlit Cloud (the container is wiped when an
+# idle app sleeps), so a Supabase failure has to be visible, not just printed.
+STATUS = {"error": None}
+
 
 # ── local fallback ────────────────────────────────────────────────────────────
 
@@ -93,8 +98,10 @@ def save_state(supabase, sid: str, state: dict) -> bool:
         # Opportunistic cleanup of expired rows (cheap, once per save).
         cutoff = (datetime.now(timezone.utc) - timedelta(days=TTL_DAYS)).isoformat()
         supabase.table(TABLE).delete().lt("updated_at", cutoff).execute()
+        STATUS["error"] = None
         return True
     except Exception as e:
+        STATUS["error"] = str(e)
         print(f"[SessionStore] Supabase save failed ({e}) - local copy kept.")
         return False
 
@@ -108,9 +115,11 @@ def load_state(supabase, sid: str) -> dict | None:
         try:
             rows = supabase.table(TABLE).select("state").eq("id", sid) \
                 .limit(1).execute().data or []
+            STATUS["error"] = None
             if rows and rows[0].get("state"):
                 return rows[0]["state"]
         except Exception as e:
+            STATUS["error"] = str(e)
             print(f"[SessionStore] Supabase load failed ({e}) - trying local copy.")
 
     return _local_load(sid)

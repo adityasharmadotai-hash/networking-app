@@ -508,9 +508,8 @@ for key, default in _DEFAULT_STATE.items():
 # Streamlit wipes st.session_state whenever the browser reconnects with a fresh
 # session id — a refresh, a laptop waking from sleep, an idle websocket timeout,
 # or the Cloud container recycling. That used to throw away the entire discovery
-# run. We now mirror the wizard into Supabase, keyed by an id in the URL, and
-# reload it automatically on a cold start.
-_SID_PARAM = "sid"
+# run. We now mirror the wizard into Supabase, keyed by the logged-in account,
+# and reload it automatically on a cold start.
 
 # Everything worth surviving a reconnect. All JSON-serializable.
 _PERSIST_KEYS = [
@@ -524,12 +523,16 @@ _PERSIST_KEYS = [
 
 
 def _wizard_sid() -> str:
-    """Stable per-browser session id, carried in the URL so a reload finds it."""
-    sid = st.query_params.get(_SID_PARAM)
-    if not sid:
-        sid = uuid.uuid4().hex
-        st.query_params[_SID_PARAM] = sid
-    return sid
+    """Storage key for the saved wizard run: derived from the login account.
+
+    This used to be a random id kept in the URL (?sid=...). Any way of reopening
+    the app that dropped that parameter - a bookmark, a new tab, the Cloud app
+    waking from sleep - minted a fresh id, so the saved run could never be found
+    again even when it had been stored. The app has a single login, so keying on
+    the account means logging in from anywhere brings the last run back.
+    """
+    account = _secret("APP_LOGIN_EMAIL", "devraj@adityasharma.ai").strip().lower()
+    return "user-" + hashlib.sha256(account.encode()).hexdigest()[:24]
 
 
 def _restore_wizard_state():
@@ -545,6 +548,7 @@ def _restore_wizard_state():
         supabase = None
 
     saved = session_store.load_state(supabase, sid)
+    st.session_state["_persist_error"] = session_store.STATUS["error"]
     if not saved:
         return
 
@@ -575,6 +579,7 @@ def _persist_wizard_state():
     except Exception:
         supabase = None
     session_store.save_state(supabase, _wizard_sid(), json.loads(blob))
+    st.session_state["_persist_error"] = session_store.STATUS["error"]
     st.session_state["_wizard_fingerprint"] = fingerprint
 
 
@@ -641,6 +646,16 @@ with tab_wizard:
         st.info("🔄 **Picked up where you left off.** Your discovery run was restored — "
                 "no need to search again.")
 
+    _persist_err = st.session_state.get("_persist_error")
+    if _persist_err:
+        st.warning(
+            "⚠️ **Your progress is not being saved.** If the app sleeps or you come back "
+            "later, discovery results and contacts will be lost. The Supabase table "
+            "`wizard_sessions` is missing or unreachable — run "
+            "`supabase/wizard_sessions.sql` once in the Supabase SQL editor. "
+            f"(Details: {str(_persist_err)[:160]})"
+        )
+
     # Visual stepper
     steps = ["Discover Jobs", "Dedup Review", "Email Template", "Contacts & Send"]
     cur = st.session_state.step
@@ -694,6 +709,9 @@ with tab_wizard:
                     st.session_state.enriched_leads = None
                     st.session_state.final_leads = None
                 st.session_state["_flash"] = f"Found {len(jobs)} companies hiring"
+                # Save before rerunning - st.rerun() raises, so the end-of-script
+                # save would not happen in this run.
+                _persist_wizard_state()
                 st.rerun()
         else:
             jobs = st.session_state.discovered_jobs
@@ -1136,6 +1154,11 @@ with tab_wizard:
                                 "contact": contact,
                                 "at": datetime.now(timezone.utc).isoformat(),
                             }
+                            # The lookup runs 10-20 minutes, which is exactly when an
+                            # idle tab drops its connection. Save each paid-for
+                            # contact immediately rather than only at the end.
+                            st.session_state.contact_cache = contact_cache
+                            _persist_wizard_state()
                     else:
                         job["contact_email"] = None
                     results.append(job)
