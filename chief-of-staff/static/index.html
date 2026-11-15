@@ -218,7 +218,7 @@ async function init() {
   document.getElementById("meName").textContent = USER.name;
   document.getElementById("meIni").textContent = USER.name.split(/\s+/).map(w=>w[0]).join("").slice(0,2).toUpperCase();
   const i = d.integrations, tag = (k,v) => `<span class="${v?"on":"off"}">${k}</span>`;
-  document.getElementById("integ").innerHTML = tag("Gemini",i.gemini)+tag("Gmail",i.gmail)+tag("HubSpot",i.hubspot)+tag("Hunter",i.hunter)+
+  document.getElementById("integ").innerHTML = tag("Gemini",i.gemini)+tag("Gmail", i.gmail)+tag("HubSpot",i.hubspot)+tag("Hunter",i.hunter)+
     `<span>${i.auto_send ? "Emails auto-send" : "Emails need approval"}</span>`;
   selectAgent(current);
 }
@@ -248,7 +248,7 @@ function selectAgent(id) {
   document.getElementById("msgs").innerHTML = "";
   document.getElementById("drafts").innerHTML = "";
   const a = BY_ID[id];
-  document.getElementById("pill").innerHTML = `${blob(a,"xs")} ${esc(a.name)} <small>${esc(a.title)}</small>`;
+  document.getElementById("pill").innerHTML = `${blob(a,"xs")} ${esc(a.name)} <small>${esc(a.title)}${a.gmail_account ? " · " + esc(a.gmail_account) : ""}</small>`;
   document.getElementById("input").placeholder = `Message ${a.name}`;
   closePanels(); renderSidebar(); poll(true);
 }
@@ -326,6 +326,7 @@ function renderDrafts(all) {
     return `<div class="draft" id="ap${ap.id}">
       <div class="hd">${blob(who,"xs")} ${esc(who.name)} drafted an email · not sent yet</div>
       ${p.reason ? `<div class="why">${esc(p.reason)}</div>` : ""}
+      <div class="f"><label>From</label><span style="padding:4px 0">${esc(p.from_account || "no Gmail assigned")}</span></div>
       <div class="f"><label>To</label><input data-f="to" value="${esc(p.to)}"></div>
       <div class="f"><label>Subject</label><input data-f="subject" value="${esc(p.subject)}"></div>
       <textarea data-f="body">${esc(p.body)}</textarea>

@@ -32,6 +32,7 @@ Your team:
         "title": "Deep Research & Outreach",
         "color": "#38bdf8",
         "model": config.ALEX_MODEL,
+        "gmail_account": config.env("ALEX_GMAIL_ACCOUNT").lower(),
         "lead": False,
         "tools": ["web_research", "fetch_url", "find_email", "verify_email", "company_email_directory",
                   "hubspot_upsert_contact", "hubspot_upsert_company", "hubspot_search_contacts",
@@ -75,6 +76,9 @@ def system_prompt(agent_id):
     if config.USER_TITLE:
         who += f", {config.USER_TITLE}"
     p += f"\n\nThe user you work for: {who}. Email auto-send is {'ON' if config.AUTO_SEND_EMAIL else 'OFF (emails need approval)'}."
+    if "send_email" in a["tools"]:
+        p += (f"\nYou send email only from {a['gmail_account']}." if a.get("gmail_account")
+              else "\nYou have no Gmail account assigned yet, so you cannot send email.")
     if config.EMAIL_SIGNATURE:
         p += f"\nEnd every email you write with exactly this signature:\n{config.EMAIL_SIGNATURE}"
     return p
@@ -82,4 +86,4 @@ def system_prompt(agent_id):
 
 def public(agent_id):
     a = AGENTS[agent_id]
-    return {k: a.get(k) for k in ("id", "name", "title", "color", "lead", "greeting", "model")}
+    return {k: a.get(k) for k in ("id", "name", "title", "color", "lead", "greeting", "model", "gmail_account")}

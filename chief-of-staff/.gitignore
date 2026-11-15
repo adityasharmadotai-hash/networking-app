@@ -3,3 +3,4 @@ gmail_token.json
 gmail_credentials.json
 *.db
 __pycache__/
+gmail_tokens/

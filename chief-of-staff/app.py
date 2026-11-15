@@ -49,6 +49,10 @@ def index():
     return FileResponse(os.path.join(STATIC, "index.html"))
 
 
+def _mailboxes():
+    return [a["gmail_account"] for a in AGENTS.values() if a.get("gmail_account")]
+
+
 @app.get("/api/agents")
 def agents():
     return {"agents": [public(a) for a in AGENTS],
@@ -56,7 +60,9 @@ def agents():
             "integrations": {
         "gemini": bool(config.GEMINI_API_KEY),
         "hubspot": bool(config.HUBSPOT_ACCESS_TOKEN),
-        "gmail": gmail.is_connected(),
+        # connected = every agent's assigned mailbox has been signed in
+        "gmail": bool(_mailboxes()) and all(m in gmail.accounts() for m in _mailboxes()),
+        "gmail_accounts": gmail.accounts(),
         "hunter": bool(config.HUNTER_API_KEY),
         "auto_send": config.AUTO_SEND_EMAIL,
     }}
@@ -121,10 +127,10 @@ def decide(approval_id: int, decision: str, edits: ApprovalIn | None = None):
     if decision != "approve":
         raise HTTPException(400, "decision must be approve or reject")
     try:
-        res = gmail.send_now(p["to"], p["subject"], p["body"], p.get("cc", ""))
+        res = gmail.send_now(p.get("from_account", ""), p["to"], p["subject"], p["body"], p.get("cc", ""))
         store.set_approval(approval_id, "approved", str(res))
         store.add_message(ap["agent_id"], "tool", "system", "approval",
-                          {"ok": True, "result": f"Email to {p['to']} approved and sent: \"{p['subject']}\""})
+                          {"ok": True, "result": f"Email from {res['from']} to {p['to']} sent: \"{p['subject']}\""})
         return {"ok": True, "result": res}
     except Exception as e:  # stays pending so you can retry after fixing Gmail
         raise HTTPException(500, f"Send failed: {e}")

@@ -59,13 +59,13 @@ TOOLS = {
         "parameters": _obj({"query": S, "limit": {"type": "integer"}}, ["query"]),
     },
     "send_email": {
-        "description": "Send an email from the user's Gmail. Queued for the user's approval unless auto-send is enabled.",
+        "description": "Send an email from your assigned Gmail account. Queued for the user's approval unless auto-send is enabled.",
         "parameters": _obj({"to": S, "subject": S, "body": {**S, "description": "Plain-text body including sign-off"},
                             "cc": S, "reason": {**S, "description": "One line on why this email is being sent"}},
                            ["to", "subject", "body"]),
     },
     "create_gmail_draft": {
-        "description": "Save an email as a draft in the user's Gmail without sending.",
+        "description": "Save an email as a draft in your assigned Gmail account without sending.",
         "parameters": _obj({"to": S, "subject": S, "body": S, "cc": S}, ["to", "subject", "body"]),
     },
 }
@@ -114,12 +114,17 @@ def execute(name, args, ctx):
     if name == "hubspot_search_contacts":
         return hubspot.search_contacts(args["query"], args.get("limit", 10))
     if name == "send_email":
+        mailbox = AGENTS[ctx["agent_id"]].get("gmail_account", "")
+        if not mailbox:
+            return {"error": "No Gmail account is assigned to this agent."}
         payload = {k: args.get(k, "") for k in ("to", "subject", "body", "cc", "reason")}
+        payload["from_account"] = mailbox
         if config.AUTO_SEND_EMAIL:
-            return gmail.send_now(payload["to"], payload["subject"], payload["body"], payload["cc"])
+            return gmail.send_now(mailbox, payload["to"], payload["subject"], payload["body"], payload["cc"])
         aid = store.add_approval(ctx["agent_id"], "send_email", payload)
         return {"queued_for_approval": True, "approval_id": aid,
                 "note": "The email is waiting for the user's approval in the dashboard's Approvals panel."}
     if name == "create_gmail_draft":
-        return gmail.create_draft(args["to"], args["subject"], args["body"], args.get("cc", ""))
+        return gmail.create_draft(AGENTS[ctx["agent_id"]].get("gmail_account", ""), args["to"], args["subject"],
+                                  args["body"], args.get("cc", ""))
     return {"error": f"Unknown tool {name}"}
